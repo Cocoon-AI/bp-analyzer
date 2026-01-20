@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "2.0.0",
+	"FriendlyName": "Blueprint Analyzer",
+	"Description": "Analyze and export Blueprint data for AI-assisted debugging and C++ migration. Includes commandlet for CLI invocation.",
+	"Category": "Editor",
+	"CreatedBy": "Cocoon Games",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "BlueprintAnalyzer",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
