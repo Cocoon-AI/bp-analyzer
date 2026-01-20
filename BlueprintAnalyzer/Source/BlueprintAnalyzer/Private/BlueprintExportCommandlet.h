@@ -33,6 +33,9 @@ enum class EBlueprintExportMode : uint8
  *   -norecurse                      Don't search subdirectories
  *   -graph                          Export full dependency graph
  *   -depth=N                        Maximum graph depth (default 3)
+ *   -findprop=PropertyName          Find blueprints with this CDO property
+ *   -propvalue=Value                Filter by property value (optional)
+ *   -parentclass=ClassName          Filter by parent class (optional)
  *
  * Output Modes (mutually exclusive):
  *   (default)                       Compact pseudocode format for analysis
@@ -70,6 +73,9 @@ private:
 
 	// Find native event implementations
 	void FindNativeEventImplementations(const TArray<FString>& SearchPaths);
+
+	// Find blueprints with specific property values
+	void FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths);
 
 	// Output JSON to stdout or file
 	void OutputJson(const TSharedPtr<FJsonObject>& JsonObject);

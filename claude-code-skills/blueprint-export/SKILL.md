@@ -44,6 +44,9 @@ The commandlet supports three output formats (mutually exclusive):
 |--------|-------------|
 | `-func=FunctionName` | Find blueprints calling this function (use with `-dir`) |
 | `-class=ClassName` | Filter function search by class (use with `-func`) |
+| `-findprop=PropertyName` | Find blueprints with this CDO property (use with `-dir`) |
+| `-propvalue=Value` | Filter by property value (use with `-findprop`) |
+| `-parentclass=ClassName` | Filter by parent class (use with `-findprop`) |
 | `-norecurse` | Don't search subdirectories (use with `-dir`) |
 
 ### Analysis
@@ -132,6 +135,29 @@ MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
   -run=BlueprintExport \
   -dir=/Game/Showdown/ \
   -nativeevents
+```
+
+### Find Blueprints by CDO Property Value
+
+Find all blueprints where a specific Class Default Object (CDO) property has a certain value.
+This is useful for finding Blueprint classes that override C++ base class property values.
+
+```bash
+# Find all widgets with bSubscribeToMetaEvents=true
+MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
+  "D:/sd/dev/Showdown/Showdown.uproject" \
+  -run=BlueprintExport \
+  -dir=/Game/Showdown/UI/ \
+  -findprop=bSubscribeToMetaEvents \
+  -propvalue=true
+
+# Find all widgets derived from SDWidgetBase with any value for bSubscribeToMetaEvents
+MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
+  "D:/sd/dev/Showdown/Showdown.uproject" \
+  -run=BlueprintExport \
+  -dir=/Game/Showdown/UI/ \
+  -findprop=bSubscribeToMetaEvents \
+  -parentclass=SDWidgetBase
 ```
 
 ### Get Asset References

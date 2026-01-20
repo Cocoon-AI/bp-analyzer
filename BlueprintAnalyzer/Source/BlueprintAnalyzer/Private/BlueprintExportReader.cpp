@@ -5,6 +5,18 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Script.h"
 #include "Engine/Blueprint.h"
+
+// UE4.27 compatibility - these flags don't exist separately,
+// BlueprintNativeEvent = has FUNC_BlueprintEvent AND FUNC_Native
+// BlueprintImplementableEvent = has FUNC_BlueprintEvent but NOT FUNC_Native
+static bool IsBlueprintNativeEvent(const UFunction* Function)
+{
+	return Function && Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) && Function->HasAnyFunctionFlags(FUNC_Native);
+}
+static bool IsBlueprintImplementableEvent(const UFunction* Function)
+{
+	return Function && Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) && !Function->HasAnyFunctionFlags(FUNC_Native);
+}
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
@@ -23,18 +35,6 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "UObject/UObjectIterator.h"
-
-// UE4.27 compatibility - these flags don't exist separately,
-// BlueprintNativeEvent = has FUNC_BlueprintEvent AND FUNC_Native
-// BlueprintImplementableEvent = has FUNC_BlueprintEvent but NOT FUNC_Native
-static bool IsBlueprintNativeEvent(const UFunction* Function)
-{
-	return Function && Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) && Function->HasAnyFunctionFlags(FUNC_Native);
-}
-static bool IsBlueprintImplementableEvent(const UFunction* Function)
-{
-	return Function && Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) && !Function->HasAnyFunctionFlags(FUNC_Native);
-}
 
 // Helper to convert FEdGraphPinType to string
 static FString PinTypeToString(const FEdGraphPinType& PinType)
@@ -873,6 +873,149 @@ TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::GetBlueprintCppFuncti
 		}
 	}
 #endif
+
+	return Results;
+}
+
+TArray<FBlueprintPropertySearchResult> UBlueprintExportReader::FindBlueprintsWithPropertyValue(
+	const FString& PropertyName,
+	const FString& PropertyValue,
+	const FString& ParentClassName,
+	const TArray<FString>& SearchPaths)
+{
+	TArray<FBlueprintPropertySearchResult> Results;
+
+	// Find the parent class if specified
+	UClass* ParentClass = nullptr;
+	if (!ParentClassName.IsEmpty())
+	{
+		ParentClass = FindObject<UClass>(ANY_PACKAGE, *ParentClassName);
+		if (!ParentClass)
+		{
+			// Try with common prefixes
+			ParentClass = FindObject<UClass>(ANY_PACKAGE, *(TEXT("U") + ParentClassName));
+			if (!ParentClass)
+			{
+				ParentClass = FindObject<UClass>(ANY_PACKAGE, *(TEXT("A") + ParentClassName));
+			}
+		}
+	}
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> AssetList;
+		AssetRegistry.GetAssetsByPath(FName(*SearchPath), AssetList, true);
+
+		for (const FAssetData& AssetData : AssetList)
+		{
+			// Check if this is a blueprint
+			if (!AssetData.AssetClass.ToString().Contains(TEXT("Blueprint")))
+			{
+				continue;
+			}
+
+			// Load the blueprint
+			UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+			if (!Blueprint || !Blueprint->GeneratedClass)
+			{
+				continue;
+			}
+
+			UClass* GeneratedClass = Blueprint->GeneratedClass;
+
+			// Check parent class filter
+			if (ParentClass && !GeneratedClass->IsChildOf(ParentClass))
+			{
+				continue;
+			}
+
+			// Get the CDO
+			UObject* CDO = GeneratedClass->GetDefaultObject();
+			if (!CDO)
+			{
+				continue;
+			}
+
+			// Find the property
+			FProperty* Property = GeneratedClass->FindPropertyByName(FName(*PropertyName));
+			if (!Property)
+			{
+				continue;
+			}
+
+			// Get the property value as string
+			FString CurrentValue;
+			void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(CDO);
+
+			if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+			{
+				bool bValue = BoolProp->GetPropertyValue(PropertyAddress);
+				CurrentValue = bValue ? TEXT("true") : TEXT("false");
+			}
+			else if (FIntProperty* IntProp = CastField<FIntProperty>(Property))
+			{
+				int32 Value = IntProp->GetPropertyValue(PropertyAddress);
+				CurrentValue = FString::FromInt(Value);
+			}
+			else if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
+			{
+				float Value = FloatProp->GetPropertyValue(PropertyAddress);
+				CurrentValue = FString::SanitizeFloat(Value);
+			}
+			else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+			{
+				CurrentValue = StrProp->GetPropertyValue(PropertyAddress);
+			}
+			else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
+			{
+				CurrentValue = NameProp->GetPropertyValue(PropertyAddress).ToString();
+			}
+			else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
+			{
+				UEnum* Enum = EnumProp->GetEnum();
+				FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+				int64 Value = UnderlyingProp->GetSignedIntPropertyValue(PropertyAddress);
+				CurrentValue = Enum ? Enum->GetNameStringByValue(Value) : FString::FromInt(Value);
+			}
+			else if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+			{
+				uint8 Value = ByteProp->GetPropertyValue(PropertyAddress);
+				if (ByteProp->Enum)
+				{
+					CurrentValue = ByteProp->Enum->GetNameStringByValue(Value);
+				}
+				else
+				{
+					CurrentValue = FString::FromInt(Value);
+				}
+			}
+			else
+			{
+				// For other property types, try to export to string
+				Property->ExportTextItem(CurrentValue, PropertyAddress, nullptr, nullptr, PPF_None);
+			}
+
+			// Check value filter
+			if (!PropertyValue.IsEmpty() && !CurrentValue.Equals(PropertyValue, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			// Add to results
+			FBlueprintPropertySearchResult Result;
+			Result.BlueprintPath = Blueprint->GetPathName();
+			Result.BlueprintName = Blueprint->GetName();
+			Result.ParentClass = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("");
+			Result.PropertyName = PropertyName;
+			Result.PropertyValue = CurrentValue;
+			Result.PropertyType = Property->GetCPPType();
+
+			Results.Add(Result);
+		}
+	}
 
 	return Results;
 }

@@ -80,4 +80,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
 	TArray<FBlueprintCppFunctionUsage> GetBlueprintCppFunctionUsage(const FString& BlueprintPath);
+
+	/**
+	 * Find blueprints with a specific CDO property value
+	 * Searches for properties on the Class Default Object (CDO) - useful for finding
+	 * Blueprint classes that have specific C++ base class property values set.
+	 * @param PropertyName Name of the property to search for
+	 * @param PropertyValue Optional value to filter by (empty = any value, "true"/"false" for bools)
+	 * @param ParentClassName Optional parent class name to filter by (only search subclasses)
+	 * @param SearchPaths Paths to search in
+	 * @return Array of blueprints matching the criteria
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	TArray<FBlueprintPropertySearchResult> FindBlueprintsWithPropertyValue(
+		const FString& PropertyName,
+		const FString& PropertyValue,
+		const FString& ParentClassName,
+		UPARAM(ref) const TArray<FString>& SearchPaths);
 };

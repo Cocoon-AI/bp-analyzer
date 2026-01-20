@@ -345,6 +345,33 @@ struct BLUEPRINTANALYZER_API FBlueprintExportData
 };
 
 /**
+ * Result from searching for blueprints with specific property values
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintPropertySearchResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString BlueprintPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString BlueprintName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString ParentClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString PropertyName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString PropertyValue;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString PropertyType;
+};
+
+/**
  * C++ function usage tracking data
  */
 USTRUCT(BlueprintType)

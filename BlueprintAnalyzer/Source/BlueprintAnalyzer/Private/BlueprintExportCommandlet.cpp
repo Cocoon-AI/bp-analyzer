@@ -144,6 +144,9 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	FString DirectoryPath;
 	FString FunctionName;
 	FString ClassName;
+	FString FindPropertyName;
+	FString PropertyValue;
+	FString ParentClassName;
 	bool bAnalyze = Switches.Contains(TEXT("analyze"));
 	bool bRecursive = !Switches.Contains(TEXT("norecurse"));
 	bool bCppUsage = Switches.Contains(TEXT("cppusage"));
@@ -187,6 +190,18 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	{
 		MaxDepth = FCString::Atoi(*ParamsMap[TEXT("depth")]);
 	}
+	if (ParamsMap.Contains(TEXT("findprop")))
+	{
+		FindPropertyName = ParamsMap[TEXT("findprop")];
+	}
+	if (ParamsMap.Contains(TEXT("propvalue")))
+	{
+		PropertyValue = ParamsMap[TEXT("propvalue")];
+	}
+	if (ParamsMap.Contains(TEXT("parentclass")))
+	{
+		ParentClassName = ParamsMap[TEXT("parentclass")];
+	}
 
 	// Ensure asset registry is ready
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -225,6 +240,12 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 			TArray<FString> SearchPaths;
 			SearchPaths.Add(DirectoryPath);
 			FindBlueprintsCallingFunction(FunctionName, ClassName, SearchPaths);
+		}
+		else if (!FindPropertyName.IsEmpty())
+		{
+			TArray<FString> SearchPaths;
+			SearchPaths.Add(DirectoryPath);
+			FindBlueprintsWithProperty(FindPropertyName, PropertyValue, ParentClassName, SearchPaths);
 		}
 		else if (bNativeEvents)
 		{
@@ -445,6 +466,41 @@ void UBlueprintExportCommandlet::FindNativeEventImplementations(const TArray<FSt
 	Result->SetBoolField(TEXT("success"), true);
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("implementations"), ResultArray);
+
+	OutputJson(Result);
+}
+
+void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	TArray<FBlueprintPropertySearchResult> Results = Reader->FindBlueprintsWithPropertyValue(PropertyName, PropertyValue, ParentClassName, SearchPaths);
+
+	TArray<TSharedPtr<FJsonValue>> ResultArray;
+	for (const FBlueprintPropertySearchResult& Item : Results)
+	{
+		TSharedPtr<FJsonObject> ItemJson = MakeShareable(new FJsonObject);
+		ItemJson->SetStringField(TEXT("blueprint_path"), Item.BlueprintPath);
+		ItemJson->SetStringField(TEXT("blueprint_name"), Item.BlueprintName);
+		ItemJson->SetStringField(TEXT("parent_class"), Item.ParentClass);
+		ItemJson->SetStringField(TEXT("property_name"), Item.PropertyName);
+		ItemJson->SetStringField(TEXT("property_value"), Item.PropertyValue);
+		ItemJson->SetStringField(TEXT("property_type"), Item.PropertyType);
+		ResultArray.Add(MakeShareable(new FJsonValueObject(ItemJson)));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("property_name"), PropertyName);
+	if (!PropertyValue.IsEmpty())
+	{
+		Result->SetStringField(TEXT("property_value_filter"), PropertyValue);
+	}
+	if (!ParentClassName.IsEmpty())
+	{
+		Result->SetStringField(TEXT("parent_class_filter"), ParentClassName);
+	}
+	Result->SetNumberField(TEXT("count"), ResultArray.Num());
+	Result->SetArrayField(TEXT("results"), ResultArray);
 
 	OutputJson(Result);
 }
