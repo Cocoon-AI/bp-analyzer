@@ -1,59 +1,54 @@
 # Blueprint Analyzer
 
-UE4 plugin with CLI commandlet for analyzing Unreal Engine Blueprints. Enables tools like Claude Code to read, analyze, and understand Blueprint structure for debugging and C++ migration assistance.
+UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis. Enables AI tools like Claude Code to inspect Blueprint structure, logic flow, and C++ function usage for debugging and migration assistance.
 
-**Target**: Unreal Engine 4.27 | **Focus**: Read-only Blueprint analysis
+## Features
+
+- **Export Blueprints** in three formats: compact pseudocode, full JSON, or C++ migration skeleton
+- **Analyze C++ usage** - find all C++ function calls within a Blueprint
+- **Search capabilities** - find Blueprints calling specific functions or implementing native events
+- **Dependency analysis** - export asset references and dependency graphs
+- **Complexity metrics** - node counts, connection counts, and complexity scores
 
 ## Quick Start
 
-Direct CLI invocation with JSON output - no running editor required:
-
 ```bash
 # Export a Blueprint (compact pseudocode format)
-UE4Editor-Cmd.exe "D:/sd/dev/Showdown/Showdown.uproject" -run=BlueprintExport -path=/Game/Showdown/UI/MainMenu
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Blueprints/MyBP
 
 # Export as full JSON
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Blueprints/MyBP -json
 
 # Generate C++ migration skeleton
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -skeleton
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Blueprints/MyBP -skeleton
 
-# Get C++ function usage
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Characters/Player -cppusage
-
-# Find all Blueprints in a directory
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/Showdown/UI/
+# Find all Blueprints calling a C++ function
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetPlayerController
 ```
 
-**Note for Git Bash/MSYS2**: Prefix with `MSYS_NO_PATHCONV=1` to prevent path mangling.
+**Git Bash/MSYS2**: Prefix with `MSYS_NO_PATHCONV=1` to prevent path mangling.
 
 ## Installation
 
-### Option 1: Install Plugin to Engine (Recommended)
+### Option 1: Engine Plugin (Recommended)
 
 Copy the `BlueprintAnalyzer` folder to your engine plugins directory:
 
 ```
-BlueprintAnalyzer/ → D:\sd\dev\Engine\Plugins\Marketplace\BlueprintAnalyzer\
+BlueprintAnalyzer/ -> Engine/Plugins/Marketplace/BlueprintAnalyzer/
 ```
 
-Then regenerate project files and rebuild:
-
-```cmd
-D:\sd\dev\Engine\Binaries\DotNET\UnrealBuildTool.exe -projectfiles -project="D:\sd\dev\Showdown\Showdown.uproject"
-```
-
-### Option 2: Install to Project
+### Option 2: Project Plugin
 
 Copy the `BlueprintAnalyzer` folder to your project's Plugins directory:
 
 ```
-BlueprintAnalyzer/ → YourProject/Plugins/BlueprintAnalyzer/
+BlueprintAnalyzer/ -> YourProject/Plugins/BlueprintAnalyzer/
 ```
 
-## Output Modes
+Then regenerate project files and rebuild.
 
-The commandlet supports three output formats:
+## Output Modes
 
 | Mode | Flag | Description |
 |------|------|-------------|
@@ -64,47 +59,66 @@ The commandlet supports three output formats:
 ### Compact Output Example
 
 ```
-Blueprint: SDGameInstance_BP
-Parent: SDGameInstance
-Type: Blueprint
+# Blueprint: MyGameMode_BP
+# Path: /Game/Modes/MyGameMode_BP
+# Parent: AGameModeBase
 
-Variables:
-  - bShowMainMenu: bool = true
-  - CurrentGameState: EGameState
+## Variables
+  MaxPlayers: int32 = 16 [public]
+  bGameStarted: bool [replicated]
 
-Functions:
-  InitializeGame():
-    SetGameState(NewState=Playing)
-    SpawnPlayers()
+## Functions
+Function StartGame()
+  IF bGameStarted
+    return
+  SET bGameStarted = true
+  Call SpawnPlayers()  // C++
+
+## Events
+Event BeginPlay
+  Call InitializeGame()
 ```
 
 ### Skeleton Output Example
 
 ```cpp
-// Generated C++ skeleton for SDGameInstance_BP
+// Generated C++ skeleton for MyGameMode_BP
+// Parent class: AGameModeBase
+
 UCLASS()
-class USDGameInstance_BP : public USDGameInstance
+class AMyGameMode_BP : public AGameModeBase
 {
     GENERATED_BODY()
+
 public:
     UPROPERTY(BlueprintReadWrite)
-    bool bShowMainMenu = true;
+    int32 MaxPlayers = 16;
+
+    UPROPERTY(Replicated)
+    bool bGameStarted;
 
     UFUNCTION(BlueprintCallable)
-    void InitializeGame();
+    void StartGame();
 };
+
+void AMyGameMode_BP::StartGame()
+{
+    // BP: Branch on bGameStarted
+    // BP: Set bGameStarted = true
+    // BP: SpawnPlayers() -> AGameModeBase::SpawnPlayers()
+}
 ```
 
-## Commandlet Reference
+## Command Reference
 
 ### Basic Operations
 
-| Command | Description |
-|---------|-------------|
+| Flag | Description |
+|------|-------------|
 | `-path=/Game/Path/Blueprint` | Export single Blueprint |
 | `-dir=/Game/Path/` | List Blueprints in directory |
+| `-norecurse` | Don't search subdirectories (use with `-dir`) |
 | `-out=file.json` | Write output to file instead of stdout |
-| `-norecurse` | Don't search subdirectories |
 
 ### Output Modes
 
@@ -118,105 +132,87 @@ public:
 
 | Flag | Description |
 |------|-------------|
-| `-analyze` | Include complexity analysis (use with `-json`) |
+| `-analyze` | Include complexity metrics (use with `-json`) |
 | `-cppusage` | Get all C++ function calls in Blueprint |
 | `-references` | Get all asset dependencies |
 | `-graph -depth=N` | Export dependency graph (default depth: 3) |
 
 ### Search Operations
 
-| Command | Description |
-|---------|-------------|
+| Flags | Description |
+|-------|-------------|
 | `-dir=/Game/ -func=FunctionName` | Find Blueprints calling a function |
-| `-dir=/Game/ -func=Name -class=ClassName` | Filter by function's class |
+| `-dir=/Game/ -func=Name -class=Class` | Filter by function's class |
 | `-dir=/Game/ -nativeevents` | Find BlueprintNativeEvent implementations |
 
-### Examples
+## Output Format
+
+All output is wrapped in markers for reliable parsing:
+
+```
+__JSON_START__{"success":true,"blueprint_name":"MyBP",...}__JSON_END__
+```
+
+Extract JSON with:
 
 ```bash
-# Export with complexity analysis
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json -analyze
-
-# Find all Blueprints calling GetPlayerController
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetPlayerController -class=UGameplayStatics
-
-# Export dependency graph with depth 5
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/MainMenu -graph -depth=5
-
-# Get references for a Blueprint
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Characters/Player -references
-
-# Find native event implementations
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/Showdown/ -nativeevents
+... 2>&1 | sed -n 's/.*__JSON_START__\(.*\)__JSON_END__.*/\1/p'
 ```
 
-### Output Format
+## Data Extracted
 
-JSON output is wrapped in markers for reliable parsing:
-
-```
-__JSON_START__{"success":true,"blueprint_name":"MyBlueprint",...}__JSON_END__
-```
-
-## Data Structures
-
-The plugin exports comprehensive Blueprint data:
-
-| Structure | Contents |
-|-----------|----------|
-| `FBlueprintExportData` | Complete Blueprint: name, path, parent, type, variables, functions, events, components |
-| `FBlueprintNodeData` | Node info: GUID, type, title, pins, position, C++ function metadata |
-| `FBlueprintConnectionData` | Graph connections between nodes |
-| `FBlueprintVariableData` | Variables with type, default value, replication settings |
-| `FBlueprintFunctionData` | Functions with inputs, outputs, nodes, connections |
-| `FBlueprintCppFunctionUsage` | C++ function call tracking with BlueprintCallable/NativeEvent flags |
+| Data | Description |
+|------|-------------|
+| Variables | Name, type, default value, visibility, replication settings |
+| Functions | Name, inputs, outputs, nodes, connections, pure/static/const flags |
+| Events | Event handlers with full node graphs |
+| Components | Scene component hierarchy with transforms |
+| References | Hard and soft asset dependencies |
+| C++ Usage | All C++ function calls with BlueprintCallable/NativeEvent flags |
 
 ## Project Structure
 
 ```
 bp-analyzer/
-├── BlueprintAnalyzer/              # UE4 Plugin (ready to install)
+├── BlueprintAnalyzer/              # UE4 Plugin
 │   ├── BlueprintAnalyzer.uplugin
 │   └── Source/BlueprintAnalyzer/
-│       ├── BlueprintAnalyzer.Build.cs
 │       ├── Public/
-│       │   ├── BlueprintExportData.h   # All data structures
-│       │   └── BlueprintExportReader.h # Reader class
+│       │   ├── BlueprintExportData.h   # Data structures
+│       │   └── BlueprintExportReader.h # Reader API
 │       └── Private/
-│           ├── BlueprintExportReader.cpp    # Implementation
-│           ├── BlueprintExportCommandlet.h  # CLI commandlet
+│           ├── BlueprintExportReader.cpp
 │           ├── BlueprintExportCommandlet.cpp
 │           └── BlueprintAnalyzerModule.*
-├── claude-code-skills/             # Claude Code skill definitions
+├── claude-code-skills/             # Claude Code skill
 │   └── blueprint-export/SKILL.md
-├── docs/
-│   ├── plan.md                     # Project objectives
-│   └── status.md                   # Current status
+├── CLAUDE.md                       # AI assistant instructions
 └── README.md
 ```
-
-## Use Cases
-
-1. **Blueprint Debugging**: Analyze structure, find broken connections, trace execution flow
-2. **C++ Migration**: Generate skeleton code, identify C++ function usage, find migration candidates
-3. **Codebase Understanding**: Map Blueprint dependencies, find function callers
-4. **Performance Analysis**: Complexity metrics, node counts, identify optimization opportunities
 
 ## Troubleshooting
 
 ### Commandlet Not Found
-- Ensure the plugin is installed and the project is rebuilt
-- Verify the commandlet is registered (check build output)
+
+- Ensure the plugin is installed correctly
+- Rebuild the project after adding the plugin
+- Check that `BlueprintAnalyzer` appears in the plugin list
 
 ### Path Mangling (Git Bash)
+
 ```bash
 MSYS_NO_PATHCONV=1 UE4Editor-Cmd.exe ... -path=/Game/...
 ```
 
 ### Blueprint Not Found
+
 - Use exact asset paths (Copy Reference from Content Browser)
 - Paths must start with `/Game/` or `/Engine/`
 - Blueprint must be saved
+
+### Slow Startup
+
+The commandlet requires loading the asset registry. First invocation may take 10-30 seconds depending on project size.
 
 ## License
 

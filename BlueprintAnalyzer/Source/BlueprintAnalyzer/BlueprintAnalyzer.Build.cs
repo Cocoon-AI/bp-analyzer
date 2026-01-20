@@ -28,11 +28,5 @@ public class BlueprintAnalyzer : ModuleRules
 				"AssetRegistry"
 			});
 		}
-
-		// For Python bindings
-		PrivateDependencyModuleNames.AddRange(new string[]
-		{
-			"PythonScriptPlugin"
-		});
 	}
 }
