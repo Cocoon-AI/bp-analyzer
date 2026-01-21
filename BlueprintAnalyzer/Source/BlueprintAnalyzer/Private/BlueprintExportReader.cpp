@@ -799,6 +799,79 @@ TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::FindBlueprintNativeEv
 	return Results;
 }
 
+TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::FindBlueprintImplementableEventImplementations(
+	const FString& EventName,
+	const TArray<FString>& SearchPaths)
+{
+	TArray<FBlueprintCppFunctionUsage> Results;
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> AssetList;
+		AssetRegistry.GetAssetsByPath(FName(*SearchPath), AssetList, true);
+
+		for (const FAssetData& AssetData : AssetList)
+		{
+			if (!AssetData.AssetClass.ToString().Contains(TEXT("Blueprint")))
+			{
+				continue;
+			}
+
+			UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+			if (!Blueprint)
+			{
+				continue;
+			}
+
+#if WITH_EDITORONLY_DATA
+			// Check event graphs for implementable event implementations
+			for (UEdGraph* Graph : Blueprint->UbergraphPages)
+			{
+				if (!Graph) continue;
+
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+					if (!EventNode) continue;
+
+					// Get the event name from the node title
+					FString NodeEventName = EventNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+
+					// Also check the function signature
+					UFunction* Function = EventNode->FindEventSignatureFunction();
+					FString FunctionEventName = Function ? Function->GetName() : TEXT("");
+
+					// Match against the search event name
+					bool bMatches = NodeEventName.Contains(EventName) ||
+					                FunctionEventName.Equals(EventName, ESearchCase::IgnoreCase);
+
+					if (bMatches && Function && IsBlueprintImplementableEvent(Function))
+					{
+						FBlueprintCppFunctionUsage Usage;
+						Usage.FunctionName = Function->GetName();
+						Usage.FunctionClass = Function->GetOwnerClass() ? Function->GetOwnerClass()->GetName() : TEXT("");
+						Usage.BlueprintPath = Blueprint->GetPathName();
+						Usage.NodeGuid = EventNode->NodeGuid.ToString();
+						Usage.GraphName = Graph->GetName();
+						Usage.bIsBlueprintCallable = Function->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+						Usage.bIsBlueprintNativeEvent = false;
+						Usage.bIsBlueprintImplementableEvent = true;
+						Usage.bIsImplementation = true;
+
+						Results.Add(Usage);
+					}
+				}
+			}
+#endif
+		}
+	}
+
+	return Results;
+}
+
 TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::GetBlueprintCppFunctionUsage(const FString& BlueprintPath)
 {
 	TArray<FBlueprintCppFunctionUsage> Results;

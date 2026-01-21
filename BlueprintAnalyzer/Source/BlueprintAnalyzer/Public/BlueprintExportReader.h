@@ -82,6 +82,17 @@ public:
 	TArray<FBlueprintCppFunctionUsage> GetBlueprintCppFunctionUsage(const FString& BlueprintPath);
 
 	/**
+	 * Find blueprints implementing a specific BlueprintImplementableEvent
+	 * @param EventName Name of the event to search for (e.g., "ReceiveBeginPlay")
+	 * @param SearchPaths Paths to search in
+	 * @return Array of blueprints implementing the event
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	TArray<FBlueprintCppFunctionUsage> FindBlueprintImplementableEventImplementations(
+		const FString& EventName,
+		UPARAM(ref) const TArray<FString>& SearchPaths);
+
+	/**
 	 * Find blueprints with a specific CDO property value
 	 * Searches for properties on the Class Default Object (CDO) - useful for finding
 	 * Blueprint classes that have specific C++ base class property values set.

@@ -147,6 +147,7 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	FString FindPropertyName;
 	FString PropertyValue;
 	FString ParentClassName;
+	FString EventName;
 	bool bAnalyze = Switches.Contains(TEXT("analyze"));
 	bool bRecursive = !Switches.Contains(TEXT("norecurse"));
 	bool bCppUsage = Switches.Contains(TEXT("cppusage"));
@@ -202,6 +203,10 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	{
 		ParentClassName = ParamsMap[TEXT("parentclass")];
 	}
+	if (ParamsMap.Contains(TEXT("event")))
+	{
+		EventName = ParamsMap[TEXT("event")];
+	}
 
 	// Ensure asset registry is ready
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -246,6 +251,12 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 			TArray<FString> SearchPaths;
 			SearchPaths.Add(DirectoryPath);
 			FindBlueprintsWithProperty(FindPropertyName, PropertyValue, ParentClassName, SearchPaths);
+		}
+		else if (!EventName.IsEmpty())
+		{
+			TArray<FString> SearchPaths;
+			SearchPaths.Add(DirectoryPath);
+			FindImplementableEventImplementations(EventName, SearchPaths);
 		}
 		else if (bNativeEvents)
 		{
@@ -501,6 +512,26 @@ void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& Prope
 	}
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("results"), ResultArray);
+
+	OutputJson(Result);
+}
+
+void UBlueprintExportCommandlet::FindImplementableEventImplementations(const FString& EventName, const TArray<FString>& SearchPaths)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	TArray<FBlueprintCppFunctionUsage> Results = Reader->FindBlueprintImplementableEventImplementations(EventName, SearchPaths);
+
+	TArray<TSharedPtr<FJsonValue>> ResultArray;
+	for (const FBlueprintCppFunctionUsage& Item : Results)
+	{
+		ResultArray.Add(MakeShareable(new FJsonValueObject(CppUsageToJson(Item))));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("event_name"), EventName);
+	Result->SetNumberField(TEXT("count"), ResultArray.Num());
+	Result->SetArrayField(TEXT("implementations"), ResultArray);
 
 	OutputJson(Result);
 }

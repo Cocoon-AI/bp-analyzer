@@ -74,6 +74,9 @@ private:
 	// Find native event implementations
 	void FindNativeEventImplementations(const TArray<FString>& SearchPaths);
 
+	// Find implementable event implementations (BlueprintImplementableEvent)
+	void FindImplementableEventImplementations(const FString& EventName, const TArray<FString>& SearchPaths);
+
 	// Find blueprints with specific property values
 	void FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths);
 
