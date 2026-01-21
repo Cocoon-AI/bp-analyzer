@@ -54,6 +54,9 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetP
 # Find native event implementations
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -nativeevents
 
+# Find implementable event implementations
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -event=ReceiveBeginPlay
+
 # Include analysis metrics with JSON
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json -analyze
 
@@ -110,6 +113,7 @@ C++ migration stubs:
 | Find Callers | `-dir=... -func=Name` | Find function callers |
 | Find Callers (filtered) | `-dir=... -func=Name -class=Class` | Find with class filter |
 | Native Events | `-dir=... -nativeevents` | Find native event implementations |
+| Implementable Events | `-dir=... -event=Name` | Find implementable event implementations |
 | Analyze | `-json -analyze` | Include complexity metrics |
 | File Output | `-out=file.json` | Write to file instead of stdout |
 

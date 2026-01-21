@@ -47,6 +47,7 @@ The commandlet supports three output formats (mutually exclusive):
 | `-findprop=PropertyName` | Find blueprints with this CDO property (use with `-dir`) |
 | `-propvalue=Value` | Filter by property value (use with `-findprop`) |
 | `-parentclass=ClassName` | Filter by parent class (use with `-findprop`) |
+| `-event=EventName` | Find BlueprintImplementableEvent implementations (use with `-dir`) |
 | `-norecurse` | Don't search subdirectories (use with `-dir`) |
 
 ### Analysis
@@ -135,6 +136,18 @@ MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
   -run=BlueprintExport \
   -dir=/Game/Showdown/ \
   -nativeevents
+```
+
+### Find Implementable Event Implementations
+
+Find blueprints that implement a specific `BlueprintImplementableEvent`.
+
+```bash
+MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
+  "D:/sd/dev/Showdown/Showdown.uproject" \
+  -run=BlueprintExport \
+  -dir=/Game/Showdown/ \
+  -event=ReceiveBeginPlay
 ```
 
 ### Find Blueprints by CDO Property Value
