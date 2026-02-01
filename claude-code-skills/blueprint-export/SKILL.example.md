@@ -83,6 +83,10 @@ The commandlet supports three output formats (mutually exclusive):
 | `-references` | Get all asset references from blueprint |
 | `-graph` | Export full dependency graph |
 | `-depth=N` | Maximum graph depth (default 3, use with `-graph`) |
+| `-refview` | Reference viewer (bidirectional dependency graph) |
+| `-refdepth=N` | Dependency depth for refview (default 3) |
+| `-referdepth=N` | Referencer depth for refview (default 3) |
+| `-bponly` | Only include Blueprints in refview |
 | `-nativeevents` | Find native event implementations (use with `-dir`) |
 
 ### Output
@@ -167,6 +171,21 @@ MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGU
 
 ```bash
 MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -graph -depth=5
+```
+
+### Reference Viewer (Bidirectional Graph)
+
+Like the Editor's Reference Viewer, shows both what an asset uses and what uses it.
+
+```bash
+# Show dependencies and referencers with default depth (3)
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -refview
+
+# Custom depths for dependencies and referencers
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -refview -refdepth=2 -referdepth=2
+
+# Only include Blueprint assets (filter out textures, materials, etc.)
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -refview -bponly
 ```
 
 ## Output Format

@@ -34,7 +34,9 @@ static bool IsBlueprintImplementableEvent(const UFunction* Function)
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryState.h"
 #include "UObject/UObjectIterator.h"
+#include "Misc/PackageName.h"
 
 // Helper to convert FEdGraphPinType to string
 static FString PinTypeToString(const FEdGraphPinType& PinType)
@@ -568,47 +570,25 @@ TArray<FBlueprintReferenceData> UBlueprintExportReader::GetBlueprintReferences(c
 		return References;
 	}
 
-	// Get hard dependencies
-	TArray<FName> HardDependencies;
-	AssetRegistry.GetDependencies(AssetData.PackageName, HardDependencies, EAssetRegistryDependencyType::Hard);
+	// Get all package dependencies using the new API
+	TArray<FAssetDependency> AllDependencies;
+	AssetRegistry.GetDependencies(AssetData.PackageName, AllDependencies, UE::AssetRegistry::EDependencyCategory::Package);
 
-	for (const FName& Dep : HardDependencies)
+	for (const FAssetDependency& Dep : AllDependencies)
 	{
-		FBlueprintReferenceData RefData;
-		RefData.ReferencePath = Dep.ToString();
-		RefData.bIsHardReference = true;
-		RefData.ReferenceType = TEXT("Dependency");
-		References.Add(RefData);
-	}
+		bool bIsHard = (Dep.Properties & UE::AssetRegistry::EDependencyProperty::Hard) != UE::AssetRegistry::EDependencyProperty::None;
 
-	// Get soft dependencies if requested
-	if (bIncludeSoftReferences)
-	{
-		TArray<FName> SoftDependencies;
-		AssetRegistry.GetDependencies(AssetData.PackageName, SoftDependencies, EAssetRegistryDependencyType::Soft);
-
-		for (const FName& Dep : SoftDependencies)
+		// Skip soft references if not requested
+		if (!bIsHard && !bIncludeSoftReferences)
 		{
-			// Skip if already added as hard reference
-			bool bAlreadyAdded = false;
-			for (const FBlueprintReferenceData& Existing : References)
-			{
-				if (Existing.ReferencePath == Dep.ToString())
-				{
-					bAlreadyAdded = true;
-					break;
-				}
-			}
-
-			if (!bAlreadyAdded)
-			{
-				FBlueprintReferenceData RefData;
-				RefData.ReferencePath = Dep.ToString();
-				RefData.bIsHardReference = false;
-				RefData.ReferenceType = TEXT("SoftDependency");
-				References.Add(RefData);
-			}
+			continue;
 		}
+
+		FBlueprintReferenceData RefData;
+		RefData.ReferencePath = Dep.AssetId.PackageName.ToString();
+		RefData.bIsHardReference = bIsHard;
+		RefData.ReferenceType = bIsHard ? TEXT("Dependency") : TEXT("SoftDependency");
+		References.Add(RefData);
 	}
 
 	return References;
@@ -1091,4 +1071,293 @@ TArray<FBlueprintPropertySearchResult> UBlueprintExportReader::FindBlueprintsWit
 	}
 
 	return Results;
+}
+
+TArray<FBlueprintReferenceData> UBlueprintExportReader::GetAssetReferencers(const FString& AssetPath, bool bIncludeSoftReferences)
+{
+	TArray<FBlueprintReferenceData> Referencers;
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	// Convert asset path to package name
+	FString PackageName = AssetPath;
+	if (PackageName.Contains(TEXT(".")))
+	{
+		// Strip the asset name portion (e.g., "/Game/Path/Asset.Asset" -> "/Game/Path/Asset")
+		PackageName = FPackageName::ObjectPathToPackageName(PackageName);
+	}
+
+	// Get all referencers using the new API
+	TArray<FAssetDependency> AllReferencers;
+	AssetRegistry.GetReferencers(FName(*PackageName), AllReferencers, UE::AssetRegistry::EDependencyCategory::Package);
+
+	for (const FAssetDependency& Ref : AllReferencers)
+	{
+		bool bIsHard = (Ref.Properties & UE::AssetRegistry::EDependencyProperty::Hard) != UE::AssetRegistry::EDependencyProperty::None;
+
+		// Skip soft references if not requested
+		if (!bIsHard && !bIncludeSoftReferences)
+		{
+			continue;
+		}
+
+		FBlueprintReferenceData RefData;
+		RefData.ReferencePath = Ref.AssetId.PackageName.ToString();
+		RefData.bIsHardReference = bIsHard;
+		RefData.ReferenceType = bIsHard ? TEXT("Referencer") : TEXT("SoftReferencer");
+		Referencers.Add(RefData);
+	}
+
+	return Referencers;
+}
+
+FAssetReferenceGraph UBlueprintExportReader::BuildReferenceViewerGraph(
+	const FString& RootAssetPath,
+	int32 DependencyDepth,
+	int32 ReferencerDepth,
+	bool bIncludeSoftReferences,
+	bool bBlueprintsOnly)
+{
+	FAssetReferenceGraph Graph;
+	Graph.RootAssetPath = RootAssetPath;
+	Graph.DependencyDepth = DependencyDepth;
+	Graph.ReferencerDepth = ReferencerDepth;
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	// Helper lambda to check if an asset is a Blueprint
+	auto IsBlueprint = [&AssetRegistry](const FString& PackagePath) -> bool
+	{
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssetsByPackageName(FName(*PackagePath), Assets);
+		for (const FAssetData& Asset : Assets)
+		{
+			FString ClassName = Asset.AssetClass.ToString();
+			if (ClassName.Contains(TEXT("Blueprint")) || ClassName.Contains(TEXT("WidgetBlueprint")))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Helper lambda to get asset info
+	auto GetAssetInfo = [&AssetRegistry](const FString& PackagePath) -> TPair<FString, FString>
+	{
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssetsByPackageName(FName(*PackagePath), Assets);
+		if (Assets.Num() > 0)
+		{
+			return TPair<FString, FString>(Assets[0].AssetName.ToString(), Assets[0].AssetClass.ToString());
+		}
+		// For native classes, extract from path
+		if (PackagePath.StartsWith(TEXT("/Script/")))
+		{
+			FString ClassName = PackagePath;
+			ClassName.RemoveFromStart(TEXT("/Script/"));
+			int32 DotIndex;
+			if (ClassName.FindChar('.', DotIndex))
+			{
+				ClassName = ClassName.Mid(DotIndex + 1);
+			}
+			return TPair<FString, FString>(ClassName, TEXT("Class"));
+		}
+		return TPair<FString, FString>(FPackageName::GetShortName(PackagePath), TEXT("Unknown"));
+	};
+
+	// Helper to add or get a node
+	auto GetOrCreateNode = [&Graph, &GetAssetInfo](const FString& PackagePath, int32 Depth) -> FAssetReferenceNode&
+	{
+		if (!Graph.Nodes.Contains(PackagePath))
+		{
+			FAssetReferenceNode NewNode;
+			NewNode.AssetPath = PackagePath;
+			NewNode.Depth = Depth;
+
+			TPair<FString, FString> Info = GetAssetInfo(PackagePath);
+			NewNode.AssetName = Info.Key;
+			NewNode.AssetClass = Info.Value;
+			NewNode.bIsBlueprint = Info.Value.Contains(TEXT("Blueprint"));
+			NewNode.bIsNativeClass = PackagePath.StartsWith(TEXT("/Script/"));
+
+			Graph.Nodes.Add(PackagePath, NewNode);
+
+			// Update counts
+			if (NewNode.bIsBlueprint)
+			{
+				Graph.BlueprintCount++;
+			}
+			if (NewNode.bIsNativeClass)
+			{
+				Graph.NativeClassCount++;
+			}
+		}
+		return Graph.Nodes[PackagePath];
+	};
+
+	// Convert root path to package name
+	FString RootPackage = RootAssetPath;
+	if (RootPackage.Contains(TEXT(".")))
+	{
+		RootPackage = FPackageName::ObjectPathToPackageName(RootPackage);
+	}
+
+	// Create root node
+	GetOrCreateNode(RootPackage, 0);
+
+	// BFS for dependencies (positive depth = what root uses)
+	if (DependencyDepth > 0)
+	{
+		TArray<TPair<FString, int32>> ToProcess;
+		TSet<FString> Visited;
+		ToProcess.Add(TPair<FString, int32>(RootPackage, 0));
+
+		while (ToProcess.Num() > 0)
+		{
+			TPair<FString, int32> Current = ToProcess[0];
+			ToProcess.RemoveAt(0);
+
+			FString CurrentPath = Current.Key;
+			int32 CurrentDepth = Current.Value;
+
+			if (Visited.Contains(CurrentPath) || CurrentDepth >= DependencyDepth)
+			{
+				continue;
+			}
+			Visited.Add(CurrentPath);
+
+			// Get dependencies using new API
+			TArray<FAssetDependency> AllDepsData;
+			AssetRegistry.GetDependencies(FName(*CurrentPath), AllDepsData, UE::AssetRegistry::EDependencyCategory::Package);
+
+			FAssetReferenceNode& CurrentNode = GetOrCreateNode(CurrentPath, CurrentDepth);
+
+			for (const FAssetDependency& DepData : AllDepsData)
+			{
+				bool bIsHard = (DepData.Properties & UE::AssetRegistry::EDependencyProperty::Hard) != UE::AssetRegistry::EDependencyProperty::None;
+
+				// Skip soft references if not requested
+				if (!bIsHard && !bIncludeSoftReferences)
+				{
+					continue;
+				}
+
+				FString DepPath = DepData.AssetId.PackageName.ToString();
+
+				// Skip engine/editor content unless it's a script reference
+				if ((DepPath.StartsWith(TEXT("/Engine/")) || DepPath.StartsWith(TEXT("/Editor/"))) &&
+					!DepPath.StartsWith(TEXT("/Script/")))
+				{
+					continue;
+				}
+
+				// Apply blueprint filter if requested
+				if (bBlueprintsOnly && !DepPath.StartsWith(TEXT("/Script/")))
+				{
+					if (!IsBlueprint(DepPath))
+					{
+						continue;
+					}
+				}
+
+				// Create/update the dependency node
+				FAssetReferenceNode& DepNode = GetOrCreateNode(DepPath, CurrentDepth + 1);
+				DepNode.bIsHardReference = bIsHard;
+
+				// Add to current node's dependencies list
+				CurrentNode.Dependencies.AddUnique(DepPath);
+
+				// Add to dependency node's referencers list
+				DepNode.Referencers.AddUnique(CurrentPath);
+
+				// Queue for further processing
+				if (CurrentDepth + 1 < DependencyDepth)
+				{
+					ToProcess.Add(TPair<FString, int32>(DepPath, CurrentDepth + 1));
+				}
+
+				Graph.TotalDependencies++;
+			}
+		}
+	}
+
+	// BFS for referencers (negative depth = what uses root)
+	if (ReferencerDepth > 0)
+	{
+		TArray<TPair<FString, int32>> ToProcess;
+		TSet<FString> Visited;
+		ToProcess.Add(TPair<FString, int32>(RootPackage, 0));
+
+		while (ToProcess.Num() > 0)
+		{
+			TPair<FString, int32> Current = ToProcess[0];
+			ToProcess.RemoveAt(0);
+
+			FString CurrentPath = Current.Key;
+			int32 CurrentDepth = Current.Value;  // This is positive, but represents steps toward referencers
+
+			if (Visited.Contains(CurrentPath) || CurrentDepth >= ReferencerDepth)
+			{
+				continue;
+			}
+			Visited.Add(CurrentPath);
+
+			// Get referencers using new API
+			TArray<FAssetDependency> AllRefsData;
+			AssetRegistry.GetReferencers(FName(*CurrentPath), AllRefsData, UE::AssetRegistry::EDependencyCategory::Package);
+
+			FAssetReferenceNode& CurrentNode = GetOrCreateNode(CurrentPath, -CurrentDepth);
+
+			for (const FAssetDependency& RefData : AllRefsData)
+			{
+				bool bIsHard = (RefData.Properties & UE::AssetRegistry::EDependencyProperty::Hard) != UE::AssetRegistry::EDependencyProperty::None;
+
+				// Skip soft references if not requested
+				if (!bIsHard && !bIncludeSoftReferences)
+				{
+					continue;
+				}
+
+				FString RefPath = RefData.AssetId.PackageName.ToString();
+
+				// Skip engine/editor content
+				if ((RefPath.StartsWith(TEXT("/Engine/")) || RefPath.StartsWith(TEXT("/Editor/"))) &&
+					!RefPath.StartsWith(TEXT("/Script/")))
+				{
+					continue;
+				}
+
+				// Apply blueprint filter if requested
+				if (bBlueprintsOnly && !RefPath.StartsWith(TEXT("/Script/")))
+				{
+					if (!IsBlueprint(RefPath))
+					{
+						continue;
+					}
+				}
+
+				// Create/update the referencer node (negative depth)
+				FAssetReferenceNode& RefNode = GetOrCreateNode(RefPath, -(CurrentDepth + 1));
+				RefNode.bIsHardReference = bIsHard;
+
+				// Add to current node's referencers list
+				CurrentNode.Referencers.AddUnique(RefPath);
+
+				// Add to referencer node's dependencies list
+				RefNode.Dependencies.AddUnique(CurrentPath);
+
+				// Queue for further processing
+				if (CurrentDepth + 1 < ReferencerDepth)
+				{
+					ToProcess.Add(TPair<FString, int32>(RefPath, CurrentDepth + 1));
+				}
+
+				Graph.TotalReferencers++;
+			}
+		}
+	}
+
+	return Graph;
 }

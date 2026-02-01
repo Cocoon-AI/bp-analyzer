@@ -108,4 +108,32 @@ public:
 		const FString& PropertyValue,
 		const FString& ParentClassName,
 		UPARAM(ref) const TArray<FString>& SearchPaths);
+
+	/**
+	 * Get assets that reference (depend on) this asset
+	 * This is the reverse of GetBlueprintReferences - finds what USES this asset
+	 * @param AssetPath Path to the asset
+	 * @param bIncludeSoftReferences Include soft object references
+	 * @return Array of referencer paths
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	TArray<FBlueprintReferenceData> GetAssetReferencers(const FString& AssetPath, bool bIncludeSoftReferences = true);
+
+	/**
+	 * Build a complete reference viewer graph (bidirectional)
+	 * Like the Editor's Reference Viewer, shows both what an asset uses and what uses it
+	 * @param RootAssetPath The asset to center the graph on
+	 * @param DependencyDepth How deep to traverse dependencies (what it uses), 0 = none
+	 * @param ReferencerDepth How deep to traverse referencers (what uses it), 0 = none
+	 * @param bIncludeSoftReferences Include soft references
+	 * @param bBlueprintsOnly Only include Blueprint assets (filter out textures, materials, etc)
+	 * @return Complete bidirectional reference graph
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	FAssetReferenceGraph BuildReferenceViewerGraph(
+		const FString& RootAssetPath,
+		int32 DependencyDepth = 3,
+		int32 ReferencerDepth = 3,
+		bool bIncludeSoftReferences = true,
+		bool bBlueprintsOnly = false);
 };

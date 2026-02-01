@@ -52,6 +52,9 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -event=Rec
 # Find Blueprints by CDO property value
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -findprop=bCanBeDamaged -propvalue=true
 
+# Reference viewer (bidirectional dependency graph)
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -refview -refdepth=2 -referdepth=2
+
 # Include analysis metrics with JSON
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json -analyze
 
@@ -105,6 +108,9 @@ C++ migration stubs:
 | C++ Usage | `-path=... -cppusage` | Get C++ function calls |
 | References | `-path=... -references` | Get asset dependencies |
 | Graph | `-path=... -graph -depth=N` | Export dependency graph |
+| Reference Viewer | `-path=... -refview` | Bidirectional reference graph |
+| Reference Viewer (depths) | `-path=... -refview -refdepth=N -referdepth=N` | Custom depths |
+| Reference Viewer (BP only) | `-path=... -refview -bponly` | Only include Blueprints |
 | Find Callers | `-dir=... -func=Name` | Find function callers |
 | Find Callers (filtered) | `-dir=... -func=Name -class=Class` | Find with class filter |
 | Native Events | `-dir=... -nativeevents` | Find native event implementations |
@@ -153,6 +159,8 @@ bp-analyzer/
 | `FBlueprintComponentData` | Component: name, class, parent, root flag, transform |
 | `FBlueprintCppFunctionUsage` | C++ call: function name, class, blueprint path, node GUID, graph name, callable/native/implementable flags |
 | `FBlueprintPropertySearchResult` | Property search result: blueprint path/name, parent class, property name/value/type |
+| `FAssetReferenceNode` | Reference graph node: path, name, class, depth, dependencies, referencers, hard/soft/blueprint/native flags |
+| `FAssetReferenceGraph` | Reference viewer graph: root path, depths, nodes map, dependency/referencer/blueprint/native counts |
 
 ## C++ Function Detection
 

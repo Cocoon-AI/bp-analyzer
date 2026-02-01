@@ -36,6 +36,10 @@ enum class EBlueprintExportMode : uint8
  *   -findprop=PropertyName          Find blueprints with this CDO property
  *   -propvalue=Value                Filter by property value (optional)
  *   -parentclass=ClassName          Filter by parent class (optional)
+ *   -refview                        Reference viewer mode (bidirectional graph)
+ *   -refdepth=N                     Depth for dependencies in refview (default 3)
+ *   -referdepth=N                   Depth for referencers in refview (default 3)
+ *   -bponly                         Only include Blueprint assets in refview
  *
  * Output Modes (mutually exclusive):
  *   (default)                       Compact pseudocode format for analysis
@@ -79,6 +83,9 @@ private:
 
 	// Find blueprints with specific property values
 	void FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths);
+
+	// Export reference viewer graph (bidirectional)
+	void ExportReferenceViewer(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly);
 
 	// Output JSON to stdout or file
 	void OutputJson(const TSharedPtr<FJsonObject>& JsonObject);

@@ -372,6 +372,83 @@ struct BLUEPRINTANALYZER_API FBlueprintPropertySearchResult
 };
 
 /**
+ * Asset node in reference viewer graph
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FAssetReferenceNode
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString AssetPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString AssetName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString AssetClass;
+
+	// Depth from the root asset (0 = root, negative = dependents, positive = dependencies)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 Depth = 0;
+
+	// Assets this one depends ON (what it uses)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FString> Dependencies;
+
+	// Assets that depend ON this one (what uses it)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FString> Referencers;
+
+	// Whether this is a hard or soft reference from parent
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	bool bIsHardReference = true;
+
+	// Whether this is a Blueprint asset
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	bool bIsBlueprint = false;
+
+	// Whether this is a C++ class (native)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	bool bIsNativeClass = false;
+};
+
+/**
+ * Complete reference viewer graph data
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FAssetReferenceGraph
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString RootAssetPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 DependencyDepth = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 ReferencerDepth = 0;
+
+	// All nodes in the graph, keyed by asset path
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TMap<FString, FAssetReferenceNode> Nodes;
+
+	// Summary counts
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 TotalDependencies = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 TotalReferencers = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 BlueprintCount = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 NativeClassCount = 0;
+};
+
+/**
  * C++ function usage tracking data
  */
 USTRUCT(BlueprintType)

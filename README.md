@@ -136,6 +136,10 @@ void AMyGameMode_BP::StartGame()
 | `-cppusage` | Get all C++ function calls in Blueprint |
 | `-references` | Get all asset dependencies |
 | `-graph -depth=N` | Export dependency graph (default depth: 3) |
+| `-refview` | Reference viewer (bidirectional dependency graph) |
+| `-refdepth=N` | Dependency depth for refview (default: 3) |
+| `-referdepth=N` | Referencer depth for refview (default: 3) |
+| `-bponly` | Only include Blueprints in refview |
 
 ### Search Operations
 

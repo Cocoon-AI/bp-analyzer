@@ -154,7 +154,11 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	bool bReferences = Switches.Contains(TEXT("references"));
 	bool bGraph = Switches.Contains(TEXT("graph"));
 	bool bNativeEvents = Switches.Contains(TEXT("nativeevents"));
+	bool bRefView = Switches.Contains(TEXT("refview"));
+	bool bBlueprintsOnly = Switches.Contains(TEXT("bponly"));
 	int32 MaxDepth = 3;
+	int32 RefDepth = 3;
+	int32 ReferDepth = 3;
 
 	// Output mode (default is Compact)
 	OutputMode = EBlueprintExportMode::Compact;
@@ -190,6 +194,14 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	if (ParamsMap.Contains(TEXT("depth")))
 	{
 		MaxDepth = FCString::Atoi(*ParamsMap[TEXT("depth")]);
+	}
+	if (ParamsMap.Contains(TEXT("refdepth")))
+	{
+		RefDepth = FCString::Atoi(*ParamsMap[TEXT("refdepth")]);
+	}
+	if (ParamsMap.Contains(TEXT("referdepth")))
+	{
+		ReferDepth = FCString::Atoi(*ParamsMap[TEXT("referdepth")]);
 	}
 	if (ParamsMap.Contains(TEXT("findprop")))
 	{
@@ -232,6 +244,10 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 		else if (bGraph)
 		{
 			ExportGraph(BlueprintPath, MaxDepth);
+		}
+		else if (bRefView)
+		{
+			ExportReferenceViewer(BlueprintPath, RefDepth, ReferDepth, bBlueprintsOnly);
 		}
 		else
 		{
@@ -532,6 +548,127 @@ void UBlueprintExportCommandlet::FindImplementableEventImplementations(const FSt
 	Result->SetStringField(TEXT("event_name"), EventName);
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("implementations"), ResultArray);
+
+	OutputJson(Result);
+}
+
+void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	FAssetReferenceGraph Graph = Reader->BuildReferenceViewerGraph(AssetPath, DependencyDepth, ReferencerDepth, true, bBlueprintsOnly);
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("root_asset"), Graph.RootAssetPath);
+	Result->SetNumberField(TEXT("dependency_depth"), Graph.DependencyDepth);
+	Result->SetNumberField(TEXT("referencer_depth"), Graph.ReferencerDepth);
+	Result->SetNumberField(TEXT("total_dependencies"), Graph.TotalDependencies);
+	Result->SetNumberField(TEXT("total_referencers"), Graph.TotalReferencers);
+	Result->SetNumberField(TEXT("blueprint_count"), Graph.BlueprintCount);
+	Result->SetNumberField(TEXT("native_class_count"), Graph.NativeClassCount);
+	Result->SetNumberField(TEXT("total_nodes"), Graph.Nodes.Num());
+
+	// Convert nodes to JSON
+	TSharedPtr<FJsonObject> NodesObj = MakeShareable(new FJsonObject);
+	for (const auto& Pair : Graph.Nodes)
+	{
+		const FAssetReferenceNode& Node = Pair.Value;
+
+		TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
+		NodeObj->SetStringField(TEXT("path"), Node.AssetPath);
+		NodeObj->SetStringField(TEXT("name"), Node.AssetName);
+		NodeObj->SetStringField(TEXT("class"), Node.AssetClass);
+		NodeObj->SetNumberField(TEXT("depth"), Node.Depth);
+		NodeObj->SetBoolField(TEXT("is_blueprint"), Node.bIsBlueprint);
+		NodeObj->SetBoolField(TEXT("is_native"), Node.bIsNativeClass);
+		NodeObj->SetBoolField(TEXT("is_hard_ref"), Node.bIsHardReference);
+
+		// Dependencies
+		TArray<TSharedPtr<FJsonValue>> DepsArray;
+		for (const FString& Dep : Node.Dependencies)
+		{
+			DepsArray.Add(MakeShareable(new FJsonValueString(Dep)));
+		}
+		NodeObj->SetArrayField(TEXT("dependencies"), DepsArray);
+
+		// Referencers
+		TArray<TSharedPtr<FJsonValue>> RefsArray;
+		for (const FString& Ref : Node.Referencers)
+		{
+			RefsArray.Add(MakeShareable(new FJsonValueString(Ref)));
+		}
+		NodeObj->SetArrayField(TEXT("referencers"), RefsArray);
+
+		NodesObj->SetObjectField(Pair.Key, NodeObj);
+	}
+	Result->SetObjectField(TEXT("nodes"), NodesObj);
+
+	// Also create a compact summary for easier reading
+	if (OutputMode == EBlueprintExportMode::Compact)
+	{
+		FString CompactOutput;
+		CompactOutput += TEXT("# Reference Viewer: ") + Graph.RootAssetPath + TEXT("\n\n");
+
+		// Separate nodes by depth for cleaner output
+		TMap<int32, TArray<const FAssetReferenceNode*>> NodesByDepth;
+		for (const auto& Pair : Graph.Nodes)
+		{
+			NodesByDepth.FindOrAdd(Pair.Value.Depth).Add(&Pair.Value);
+		}
+
+		// Sort depths
+		TArray<int32> Depths;
+		NodesByDepth.GetKeys(Depths);
+		Depths.Sort();
+
+		// Output referencers first (negative depths, but show positive for clarity)
+		CompactOutput += TEXT("## What Uses This Asset (Referencers)\n");
+		for (int32 Depth : Depths)
+		{
+			if (Depth < 0)
+			{
+				CompactOutput += FString::Printf(TEXT("\n### Depth %d:\n"), -Depth);
+				for (const FAssetReferenceNode* Node : NodesByDepth[Depth])
+				{
+					FString TypeTag = Node->bIsBlueprint ? TEXT("[BP]") : (Node->bIsNativeClass ? TEXT("[C++]") : TEXT(""));
+					CompactOutput += FString::Printf(TEXT("  %s %s (%s)\n"), *TypeTag, *Node->AssetName, *Node->AssetClass);
+				}
+			}
+		}
+
+		// Root
+		CompactOutput += TEXT("\n## Root Asset\n");
+		if (const FAssetReferenceNode* Root = Graph.Nodes.Find(Graph.RootAssetPath))
+		{
+			FString TypeTag = Root->bIsBlueprint ? TEXT("[BP]") : (Root->bIsNativeClass ? TEXT("[C++]") : TEXT(""));
+			CompactOutput += FString::Printf(TEXT("  %s %s (%s)\n"), *TypeTag, *Root->AssetName, *Root->AssetClass);
+		}
+
+		// Dependencies (positive depths)
+		CompactOutput += TEXT("\n## What This Asset Uses (Dependencies)\n");
+		for (int32 Depth : Depths)
+		{
+			if (Depth > 0)
+			{
+				CompactOutput += FString::Printf(TEXT("\n### Depth %d:\n"), Depth);
+				for (const FAssetReferenceNode* Node : NodesByDepth[Depth])
+				{
+					FString TypeTag = Node->bIsBlueprint ? TEXT("[BP]") : (Node->bIsNativeClass ? TEXT("[C++]") : TEXT(""));
+					CompactOutput += FString::Printf(TEXT("  %s %s (%s)\n"), *TypeTag, *Node->AssetName, *Node->AssetClass);
+				}
+			}
+		}
+
+		CompactOutput += TEXT("\n## Summary\n");
+		CompactOutput += FString::Printf(TEXT("  Total Nodes: %d\n"), Graph.Nodes.Num());
+		CompactOutput += FString::Printf(TEXT("  Blueprints: %d\n"), Graph.BlueprintCount);
+		CompactOutput += FString::Printf(TEXT("  Native Classes: %d\n"), Graph.NativeClassCount);
+		CompactOutput += FString::Printf(TEXT("  Dependencies Found: %d\n"), Graph.TotalDependencies);
+		CompactOutput += FString::Printf(TEXT("  Referencers Found: %d\n"), Graph.TotalReferencers);
+
+		OutputText(CompactOutput);
+		return;
+	}
 
 	OutputJson(Result);
 }
