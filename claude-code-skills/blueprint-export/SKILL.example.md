@@ -1,3 +1,14 @@
+<!--
+  SKILL.example.md - Example Claude Code Skill for Blueprint Analyzer
+
+  This is an EXAMPLE skill file. To use it:
+  1. Copy this file to your project's .claude/skills/blueprint-export/SKILL.md
+  2. Update all paths to match your project (engine path, .uproject path, content paths)
+  3. Customize the "Key Blueprint Paths" and "Common Directories" sections for your project
+
+  Learn more about Claude Code skills:
+  https://docs.anthropic.com/en/docs/claude-code/skills
+-->
 ---
 name: blueprint-export
 description: Export and analyze Unreal Engine Blueprint data. Use when the user asks to analyze, export, inspect, or understand blueprints, find which blueprints call a C++ function, or generate C++ migration stubs.
@@ -13,13 +24,27 @@ Export and analyze Unreal Engine Blueprint data using the BlueprintExport comman
 Export a blueprint:
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
+# UPDATE THESE PATHS for your project:
+# - Engine path: Path to your UE4Editor-Cmd.exe
+# - Project path: Path to your .uproject file
+# - Blueprint path: Path to a blueprint in your project
+MSYS_NO_PATHCONV=1 "Path/To/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
+  "Path/To/YourProject.uproject" \
   -run=BlueprintExport \
-  -path=/Game/Showdown/Modes/SDGameInstance_BP
+  -path=/Game/YourProject/Blueprints/ExampleBP
 ```
 
 **IMPORTANT**: Always use `MSYS_NO_PATHCONV=1` to prevent Git bash from mangling `/Game/...` paths.
+
+## Path Variables
+
+The examples below use these placeholder variables - replace with your actual paths:
+
+```bash
+# Example values - UPDATE FOR YOUR PROJECT:
+UE4_EDITOR_CMD="D:/Engine/Binaries/Win64/UE4Editor-Cmd.exe"
+PROJECT="D:/Projects/MyGame/MyGame.uproject"
+```
 
 ## Output Modes
 
@@ -72,70 +97,43 @@ The commandlet supports three output formats (mutually exclusive):
 ### Export a Single Blueprint (Compact)
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -path=$ARGUMENTS
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS
 ```
 
 ### Export Blueprint as Full JSON
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -path=$ARGUMENTS \
-  -json
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -json
 ```
 
 ### Generate C++ Migration Skeleton
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -path=$ARGUMENTS \
-  -skeleton
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -skeleton
 ```
 
 ### Get C++ Function Usage
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -path=$ARGUMENTS \
-  -cppusage
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -cppusage
 ```
 
 ### Find Blueprints Calling a C++ Function
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -dir=/Game/Showdown/ \
-  -func=FunctionName \
-  -class=ClassName
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -dir=/Game/ -func=FunctionName -class=ClassName
 ```
 
 ### List Blueprints in Directory
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -dir=/Game/Showdown/UI/
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -dir=/Game/UI/
 ```
 
 ### Find Native Event Implementations
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -dir=/Game/Showdown/ \
-  -nativeevents
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -dir=/Game/ -nativeevents
 ```
 
 ### Find Implementable Event Implementations
@@ -143,11 +141,7 @@ MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
 Find blueprints that implement a specific `BlueprintImplementableEvent`.
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -dir=/Game/Showdown/ \
-  -event=ReceiveBeginPlay
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -dir=/Game/ -event=ReceiveBeginPlay
 ```
 
 ### Find Blueprints by CDO Property Value
@@ -156,42 +150,23 @@ Find all blueprints where a specific Class Default Object (CDO) property has a c
 This is useful for finding Blueprint classes that override C++ base class property values.
 
 ```bash
-# Find all widgets with bSubscribeToMetaEvents=true
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -dir=/Game/Showdown/UI/ \
-  -findprop=bSubscribeToMetaEvents \
-  -propvalue=true
+# Find blueprints with a specific property value
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -dir=/Game/ -findprop=bCanBeDamaged -propvalue=true
 
-# Find all widgets derived from SDWidgetBase with any value for bSubscribeToMetaEvents
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -dir=/Game/Showdown/UI/ \
-  -findprop=bSubscribeToMetaEvents \
-  -parentclass=SDWidgetBase
+# Find blueprints derived from a specific class with a property
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -dir=/Game/ -findprop=bCanBeDamaged -parentclass=APawn
 ```
 
 ### Get Asset References
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -path=$ARGUMENTS \
-  -references
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -references
 ```
 
 ### Export Dependency Graph
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
-  -run=BlueprintExport \
-  -path=$ARGUMENTS \
-  -graph \
-  -depth=5
+MSYS_NO_PATHCONV=1 "$UE4_EDITOR_CMD" "$PROJECT" -run=BlueprintExport -path=$ARGUMENTS -graph -depth=5
 ```
 
 ## Output Format
@@ -211,23 +186,22 @@ Extract JSON with:
 ### Compact Output Example
 
 ```
-Blueprint: SDGameInstance_BP
-Parent: SDGameInstance
+Blueprint: MyGameMode_BP
+Parent: AGameModeBase
 Type: Blueprint
 
 Variables:
-  - bShowMainMenu: bool = true
-  - CurrentGameState: EGameState
+  - MaxPlayers: int32 = 16
+  - bGameStarted: bool
 
 Functions:
-  InitializeGame():
+  StartGame():
     SetGameState(NewState=Playing)
     SpawnPlayers()
 
 Events:
   BeginPlay:
     InitializeGame()
-    LoadUserSettings()
 ```
 
 ### JSON Output Example
@@ -235,9 +209,9 @@ Events:
 ```json
 {
   "success": true,
-  "blueprint_name": "SDGameInstance_BP",
-  "blueprint_path": "/Game/Showdown/Modes/SDGameInstance_BP",
-  "parent_class": "SDGameInstance",
+  "blueprint_name": "MyGameMode_BP",
+  "blueprint_path": "/Game/Blueprints/MyGameMode_BP",
+  "parent_class": "AGameModeBase",
   "blueprint_type": "Blueprint",
   "variables": [...],
   "functions": [...],
@@ -256,23 +230,23 @@ Events:
 ### Skeleton Output Example
 
 ```cpp
-// Generated C++ skeleton for SDGameInstance_BP
-// Parent class: SDGameInstance
+// Generated C++ skeleton for MyGameMode_BP
+// Parent class: AGameModeBase
 
 UCLASS()
-class USDGameInstance_BP : public USDGameInstance
+class AMyGameMode : public AGameModeBase
 {
     GENERATED_BODY()
 
 public:
     UPROPERTY(BlueprintReadWrite)
-    bool bShowMainMenu = true;
+    int32 MaxPlayers = 16;
 
     UFUNCTION(BlueprintCallable)
-    void InitializeGame();
+    void StartGame();
 };
 
-void USDGameInstance_BP::InitializeGame()
+void AMyGameMode::StartGame()
 {
     // BP Logic:
     // SetGameState(NewState=Playing)
@@ -282,18 +256,19 @@ void USDGameInstance_BP::InitializeGame()
 
 ## Key Blueprint Paths
 
+<!-- UPDATE: Add your project's important blueprints here -->
 | Blueprint | Path |
 |-----------|------|
-| Game Instance | `/Game/Showdown/Modes/SDGameInstance_BP` |
-| Circle War Mode | `/Game/Showdown/Modes/SDCircleWar_BP` |
-| Main Menu | `/Game/Showdown/UI/MainMenu` |
+| Game Mode | `/Game/Blueprints/MyGameMode_BP` |
+| Player Character | `/Game/Characters/PlayerCharacter_BP` |
+| Main Menu | `/Game/UI/MainMenu_WBP` |
 
 ## Common Directories
 
-- `/Game/Showdown/Modes/` - Game modes and instances
-- `/Game/Showdown/UI/` - User interface widgets
-- `/Game/Showdown/Characters/` - Character blueprints
-- `/Game/Showdown/Weapons/` - Weapon blueprints
+<!-- UPDATE: Add your project's common blueprint directories here -->
+- `/Game/Blueprints/` - Core game logic
+- `/Game/UI/` - User interface widgets
+- `/Game/Characters/` - Character blueprints
 
 ## Timeout
 
@@ -301,9 +276,8 @@ Use a timeout of at least 120000ms (2 minutes) as the commandlet takes time to i
 
 ## Resolving Blueprint Names
 
+<!-- UPDATE: Add your project's common directories for name resolution -->
 If the user provides a partial name, search in common locations:
-- `/Game/Showdown/Modes/`
-- `/Game/Showdown/UI/`
-- `/Game/Showdown/Characters/`
-- `/Game/Showdown/Weapons/`
-- `/Game/Showdown/Blueprints/`
+- `/Game/Blueprints/`
+- `/Game/UI/`
+- `/Game/Characters/`

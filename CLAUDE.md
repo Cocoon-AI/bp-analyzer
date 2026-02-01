@@ -6,14 +6,6 @@ This file provides guidance to Claude Code when working with the Blueprint Analy
 
 UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis. Enables AI tools to inspect Blueprint structure, logic flow, and C++ function usage for debugging and migration assistance.
 
-## Related Projects
-
-- **Grit**: Western-themed battle royale game using UE4.27
-  - Game directory: `D:\sd\dev`
-  - Main game code: `D:\sd\dev\Showdown\`
-  - Plugin installed at: `D:\sd\dev\Engine\Plugins\Marketplace\BlueprintAnalyzer\`
-  - Use `mcp-perforce` for version control
-
 ## Architecture
 
 Direct CLI invocation without requiring running editor UI:
@@ -28,10 +20,10 @@ Output wrapped in `__JSON_START__...__JSON_END__` markers for reliable parsing.
 
 ```bash
 # Export Blueprint (compact pseudocode format - default)
-UE4Editor-Cmd.exe "D:/sd/dev/Showdown/Showdown.uproject" -run=BlueprintExport -path=/Game/Showdown/UI/MainMenu
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Blueprints/MyBP
 
 # Export as full JSON
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Blueprints/MyBP -json
 
 # Generate C++ migration skeleton
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -skeleton
@@ -46,7 +38,7 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -refere
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -graph -depth=3
 
 # List Blueprints in directory
-UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/Showdown/UI/
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/UI/
 
 # Find Blueprints calling a function
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetPlayerController -class=UGameplayStatics
@@ -56,6 +48,9 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -nativeeve
 
 # Find implementable event implementations
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -event=ReceiveBeginPlay
+
+# Find Blueprints by CDO property value
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -findprop=bCanBeDamaged -propvalue=true
 
 # Include analysis metrics with JSON
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json -analyze
@@ -114,6 +109,9 @@ C++ migration stubs:
 | Find Callers (filtered) | `-dir=... -func=Name -class=Class` | Find with class filter |
 | Native Events | `-dir=... -nativeevents` | Find native event implementations |
 | Implementable Events | `-dir=... -event=Name` | Find implementable event implementations |
+| Property Search | `-dir=... -findprop=Name` | Find Blueprints with CDO property |
+| Property Search (filtered) | `-dir=... -findprop=Name -propvalue=Value` | Filter by property value |
+| Property Search (by class) | `-dir=... -findprop=Name -parentclass=Class` | Filter by parent class |
 | Analyze | `-json -analyze` | Include complexity metrics |
 | File Output | `-out=file.json` | Write to file instead of stdout |
 
@@ -154,6 +152,7 @@ bp-analyzer/
 | `FBlueprintReferenceData` | Asset reference: path, type, hard/soft flag, context |
 | `FBlueprintComponentData` | Component: name, class, parent, root flag, transform |
 | `FBlueprintCppFunctionUsage` | C++ call: function name, class, blueprint path, node GUID, graph name, callable/native/implementable flags |
+| `FBlueprintPropertySearchResult` | Property search result: blueprint path/name, parent class, property name/value/type |
 
 ## C++ Function Detection
 
@@ -184,14 +183,6 @@ Detection uses UE4.27 pattern: `FUNC_BlueprintEvent + FUNC_Native` for Blueprint
 | Sets | `TSet<T>` |
 | Maps | `TMap<K, V>` |
 
-## Grit Blueprint Locations
-
-- `/Game/Showdown/UI/` - User interface widgets
-- `/Game/Showdown/Blueprints/` - Game logic
-- `/Game/Showdown/Characters/` - Character blueprints
-- `/Game/Showdown/Modes/` - Game mode blueprints
-- `/Game/Showdown/Weapons/` - Weapon blueprints
-
 ## Development Guidelines
 
 ### Plugin Development
@@ -211,8 +202,8 @@ Module type is `Editor` (requires editor, loads at Default phase).
 ### Testing
 
 ```bash
-MSYS_NO_PATHCONV=1 "D:/sd/dev/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
-  "D:/sd/dev/Showdown/Showdown.uproject" \
+MSYS_NO_PATHCONV=1 "Path/To/Engine/Binaries/Win64/UE4Editor-Cmd.exe" \
+  "Path/To/Project.uproject" \
   -run=BlueprintExport \
-  -path=/Game/Showdown/Modes/SDGameInstance_BP
+  -path=/Game/Blueprints/MyBP
 ```

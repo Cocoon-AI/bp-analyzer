@@ -6,7 +6,7 @@ UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis
 
 - **Export Blueprints** in three formats: compact pseudocode, full JSON, or C++ migration skeleton
 - **Analyze C++ usage** - find all C++ function calls within a Blueprint
-- **Search capabilities** - find Blueprints calling specific functions or implementing native events
+- **Search capabilities** - find Blueprints calling specific functions, implementing events, or with specific property values
 - **Dependency analysis** - export asset references and dependency graphs
 - **Complexity metrics** - node counts, connection counts, and complexity scores
 
@@ -144,6 +144,10 @@ void AMyGameMode_BP::StartGame()
 | `-dir=/Game/ -func=FunctionName` | Find Blueprints calling a function |
 | `-dir=/Game/ -func=Name -class=Class` | Filter by function's class |
 | `-dir=/Game/ -nativeevents` | Find BlueprintNativeEvent implementations |
+| `-dir=/Game/ -event=EventName` | Find BlueprintImplementableEvent implementations |
+| `-dir=/Game/ -findprop=PropertyName` | Find Blueprints with a CDO property |
+| `-dir=/Game/ -findprop=Name -propvalue=Value` | Filter by property value |
+| `-dir=/Game/ -findprop=Name -parentclass=Class` | Filter by parent class |
 
 ## Output Format
 
