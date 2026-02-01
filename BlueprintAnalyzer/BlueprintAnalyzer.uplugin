@@ -5,7 +5,7 @@
 	"FriendlyName": "Blueprint Analyzer",
 	"Description": "Analyze and export Blueprint data for AI-assisted debugging and C++ migration. Includes commandlet for CLI invocation.",
 	"Category": "Editor",
-	"CreatedBy": "Cocoon Games",
+	"CreatedBy": "Cocoon AI",
 	"CreatedByURL": "",
 	"DocsURL": "",
 	"MarketplaceURL": "",
@@ -14,6 +14,12 @@
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
 	"Installed": false,
+	"Plugins": [
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		}
+	],
 	"Modules": [
 		{
 			"Name": "BlueprintAnalyzer",

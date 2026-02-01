@@ -83,7 +83,7 @@ public:
 
 	/**
 	 * Find blueprints implementing a specific BlueprintImplementableEvent
-	 * @param EventName Name of the event to search for (e.g., "ReceiveBeginPlay")
+	 * @param EventName Name of the event to search for (e.g., "OnEmptyCowboyRecipeLoaded")
 	 * @param SearchPaths Paths to search in
 	 * @return Array of blueprints implementing the event
 	 */
