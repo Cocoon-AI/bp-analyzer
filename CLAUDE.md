@@ -8,13 +8,19 @@ UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis
 
 ## Architecture
 
-Direct CLI invocation without requiring running editor UI:
+Two modes of operation:
 
+### CLI Mode (one-shot)
 ```
 AI Tool -> Bash -> UE4Editor-Cmd.exe -run=BlueprintExport -> stdout
 ```
-
 Output wrapped in `__JSON_START__...__JSON_END__` markers for reliable parsing.
+
+### Server Mode (persistent, recommended)
+```
+AI Tool -> digbp CLI -> Named Pipe -> UE4 Server (stays running) -> JSON-RPC response
+```
+The server keeps UE4 loaded, eliminating the ~30-60s startup per query. The `digbp` Go CLI manages the server lifecycle and communicates via Windows Named Pipes using JSON-RPC 2.0 with 4-byte length-prefix framing.
 
 ## Commandlet Usage
 
@@ -63,6 +69,79 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/BP -json -
 ```
 
 **Git Bash Note**: Use `MSYS_NO_PATHCONV=1` prefix to prevent path mangling.
+
+## digbp CLI Tool (Recommended)
+
+The `digbp` Go CLI provides a persistent server mode that avoids repeated UE4 startup costs.
+
+### Setup
+
+Create `~/.digbp.yaml`:
+```yaml
+editor_cmd: "E:/path/to/UE4Editor-Cmd.exe"
+uproject: "E:/path/to/Project.uproject"
+pipe_name: "blueprintexport"    # optional, this is the default
+start_timeout: 120s             # optional, default 120s
+```
+
+Or use environment variables: `DIGBP_EDITOR_CMD`, `DIGBP_UPROJECT`, `DIGBP_PIPE_NAME`.
+
+Build: `cd bp-analyzer && go build -o digbp.exe ./cmd/digbp/`
+
+### Server Lifecycle
+
+```bash
+digbp start                     # Launch UE4 server (auto-starts on first command too)
+digbp status                    # Check if server is running
+digbp stop                      # Shutdown server
+```
+
+### digbp Commands
+
+```bash
+# Export Blueprint (JSON by default)
+digbp export --path=/Game/Blueprints/MyBP
+digbp export --path=/Game/Blueprints/MyBP --mode=compact
+digbp export --path=/Game/Blueprints/MyBP --mode=skeleton
+digbp export --path=/Game/Blueprints/MyBP --analyze
+
+# List Blueprints in directory
+digbp list --dir=/Game/UI/
+digbp list --dir=/Game/UI/ --no-recurse
+
+# C++ function usage
+digbp cppusage --path=/Game/Blueprints/MyBP
+
+# Asset references
+digbp references --path=/Game/Blueprints/MyBP
+
+# Dependency graph
+digbp graph --path=/Game/Blueprints/MyBP --depth=3
+
+# Reference viewer (bidirectional)
+digbp refview --path=/Game/Blueprints/MyBP --refdepth=2 --referdepth=2
+digbp refview --path=/Game/Blueprints/MyBP --bponly
+
+# Find function callers
+digbp findcallers --dir=/Game/ --func=GetPlayerController --class=UGameplayStatics
+
+# Find native event implementations
+digbp nativeevents --dir=/Game/
+
+# Find implementable event implementations
+digbp findevents --dir=/Game/ --event=ReceiveBeginPlay
+
+# Find by CDO property
+digbp findprop --dir=/Game/ --prop=bCanBeDamaged --value=true
+digbp findprop --dir=/Game/ --prop=bCanBeDamaged --parentclass=APawn
+
+# Pretty-print JSON output
+digbp export --path=/Game/BP --pretty
+```
+
+### Auto-Start
+
+All operation commands automatically start the server if it's not running. The first call will have the UE4 startup delay; subsequent calls are fast.
 
 ## Output Modes
 
@@ -120,6 +199,8 @@ C++ migration stubs:
 | Property Search (by class) | `-dir=... -findprop=Name -parentclass=Class` | Filter by parent class |
 | Analyze | `-json -analyze` | Include complexity metrics |
 | File Output | `-out=file.json` | Write to file instead of stdout |
+| Server Mode | `-pipeserver` | Start persistent named pipe server |
+| Server Mode (custom) | `-pipeserver -pipename=Name` | Custom pipe name |
 
 ## Project Structure
 
@@ -130,13 +211,23 @@ bp-analyzer/
 │   └── Source/BlueprintAnalyzer/
 │       ├── BlueprintAnalyzer.Build.cs
 │       ├── Public/
-│       │   ├── BlueprintExportData.h     # Data structures (10 USTRUCTs)
+│       │   ├── BlueprintExportData.h     # Data structures (14 USTRUCTs)
 │       │   └── BlueprintExportReader.h   # Reader UCLASS API
 │       └── Private/
 │           ├── BlueprintExportReader.cpp # Core implementation (~1300 lines)
-│           ├── BlueprintExportCommandlet.cpp # CLI + output formatting (~1300 lines)
+│           ├── BlueprintExportCommandlet.cpp # CLI + output formatting
 │           ├── BlueprintExportCommandlet.h
+│           ├── BlueprintExportServer.cpp # Named pipe server + JSON-RPC dispatch
+│           ├── BlueprintExportServer.h
 │           └── BlueprintAnalyzerModule.*
+├── cmd/digbp/
+│   └── main.go                           # digbp CLI tool (Go)
+├── internal/
+│   ├── config/config.go                  # Config file loading (~/.digbp.yaml)
+│   ├── pipe/client.go                    # Named pipe client with length framing
+│   ├── rpc/rpc.go                        # JSON-RPC 2.0 client
+│   └── server/manager.go                 # UE4 server lifecycle management
+├── go.mod
 ├── claude-code-skills/
 │   └── blueprint-export/SKILL.md         # Claude Code skill definition
 ├── CLAUDE.md                             # This file

@@ -7,10 +7,52 @@ UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis
 - **Export Blueprints** in three formats: compact pseudocode, full JSON, or C++ migration skeleton
 - **Analyze C++ usage** - find all C++ function calls within a Blueprint
 - **Search capabilities** - find Blueprints calling specific functions, implementing events, or with specific property values
-- **Dependency analysis** - export asset references and dependency graphs
+- **Dependency analysis** - export asset references, dependency graphs, and bidirectional reference viewer
 - **Complexity metrics** - node counts, connection counts, and complexity scores
+- **Persistent server mode** - keeps UE4 loaded for instant repeated queries via the `digbp` CLI
 
 ## Quick Start
+
+### Using digbp (Recommended)
+
+The `digbp` CLI communicates with a persistent UE4 server over named pipes, eliminating the ~30-60s startup on each query.
+
+**1. Configure** — create `~/.digbp.yaml`:
+
+```yaml
+editor_cmd: "D:/Engine/Binaries/Win64/UE4Editor-Cmd.exe"
+uproject: "D:/Projects/MyGame/MyGame.uproject"
+```
+
+**2. Build:**
+
+```bash
+cd bp-analyzer
+go build -o digbp.exe ./cmd/digbp/
+```
+
+**3. Use** — the server auto-starts on first command:
+
+```bash
+# Export a Blueprint (JSON)
+digbp export --path=/Game/Blueprints/MyBP --pretty
+
+# Compact pseudocode
+digbp export --path=/Game/Blueprints/MyBP --mode=compact
+
+# C++ migration skeleton
+digbp export --path=/Game/Blueprints/MyBP --mode=skeleton
+
+# List Blueprints in a directory
+digbp list --dir=/Game/UI/
+
+# Find function callers
+digbp findcallers --dir=/Game/ --func=GetPlayerController --class=UGameplayStatics
+```
+
+The first command launches the UE4 server (expect a startup delay). All subsequent commands are fast.
+
+### Using the Commandlet Directly
 
 ```bash
 # Export a Blueprint (compact pseudocode format)
@@ -27,6 +69,62 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetP
 ```
 
 **Git Bash/MSYS2**: Prefix with `MSYS_NO_PATHCONV=1` to prevent path mangling.
+
+## digbp CLI Reference
+
+### Server Lifecycle
+
+```bash
+digbp start       # Launch UE4 server (auto-starts on first command too)
+digbp status      # Check if server is running
+digbp stop        # Shutdown server
+```
+
+### Commands
+
+| Command | Description | Required Flags |
+|---------|-------------|----------------|
+| `digbp export` | Export a Blueprint | `--path` |
+| `digbp list` | List Blueprints in directory | `--dir` |
+| `digbp cppusage` | Get C++ function usage | `--path` |
+| `digbp references` | Get asset references | `--path` |
+| `digbp graph` | Export dependency graph | `--path` |
+| `digbp refview` | Bidirectional reference viewer | `--path` |
+| `digbp findcallers` | Find Blueprints calling a function | `--dir`, `--func` |
+| `digbp nativeevents` | Find native event implementations | `--dir` |
+| `digbp findevents` | Find implementable event implementations | `--dir`, `--event` |
+| `digbp findprop` | Find Blueprints by CDO property | `--dir`, `--prop` |
+
+### Common Flags
+
+| Flag | Description |
+|------|-------------|
+| `--pretty` | Pretty-print JSON output |
+| `--path` | Blueprint asset path |
+| `--dir` | Directory to search |
+| `--mode` | Output mode: `json` (default), `compact`, `skeleton` |
+| `--analyze` | Include complexity analysis (export only) |
+| `--depth` | Graph traversal depth (default: 3) |
+| `--refdepth` | Dependency depth for refview (default: 3) |
+| `--referdepth` | Referencer depth for refview (default: 3) |
+| `--bponly` | Only include Blueprints in refview |
+| `--class` | Filter findcallers by class |
+| `--value` | Filter findprop by property value |
+| `--parentclass` | Filter findprop by parent class |
+| `--no-recurse` | Don't recurse into subdirectories (list only) |
+
+### Configuration
+
+Create `~/.digbp.yaml`:
+
+```yaml
+editor_cmd: "D:/Engine/Binaries/Win64/UE4Editor-Cmd.exe"
+uproject: "D:/Projects/MyGame/MyGame.uproject"
+pipe_name: "blueprintexport"    # optional, default
+start_timeout: 120s             # optional, default 120s
+```
+
+Environment variables override config: `DIGBP_EDITOR_CMD`, `DIGBP_UPROJECT`, `DIGBP_PIPE_NAME`.
 
 ## Installation
 
@@ -109,7 +207,7 @@ void AMyGameMode_BP::StartGame()
 }
 ```
 
-## Command Reference
+## Commandlet Reference
 
 ### Basic Operations
 
@@ -119,6 +217,8 @@ void AMyGameMode_BP::StartGame()
 | `-dir=/Game/Path/` | List Blueprints in directory |
 | `-norecurse` | Don't search subdirectories (use with `-dir`) |
 | `-out=file.json` | Write output to file instead of stdout |
+| `-pipeserver` | Start persistent named pipe server |
+| `-pipename=Name` | Custom pipe name (default: blueprintexport) |
 
 ### Output Modes
 
@@ -153,15 +253,23 @@ void AMyGameMode_BP::StartGame()
 | `-dir=/Game/ -findprop=Name -propvalue=Value` | Filter by property value |
 | `-dir=/Game/ -findprop=Name -parentclass=Class` | Filter by parent class |
 
-## Output Format
+## Architecture
 
-All output is wrapped in markers for reliable parsing:
+### Server Mode (digbp)
 
 ```
-__JSON_START__{"success":true,"blueprint_name":"MyBP",...}__JSON_END__
+AI Tool -> digbp CLI -> Named Pipe -> UE4 Server (stays running) -> JSON-RPC response
 ```
 
-Extract JSON with:
+The `digbp` Go CLI manages a persistent UE4 process that keeps the editor and asset registry loaded. Communication uses Windows Named Pipes with JSON-RPC 2.0 over 4-byte length-prefix framing. The server handles one request at a time; all operations are serialized.
+
+### CLI Mode (one-shot)
+
+```
+AI Tool -> Bash -> UE4Editor-Cmd.exe -run=BlueprintExport -> stdout
+```
+
+Output wrapped in `__JSON_START__...__JSON_END__` markers for reliable parsing. Extract JSON with:
 
 ```bash
 ... 2>&1 | sed -n 's/.*__JSON_START__\(.*\)__JSON_END__.*/\1/p'
@@ -186,15 +294,25 @@ bp-analyzer/
 │   ├── BlueprintAnalyzer.uplugin
 │   └── Source/BlueprintAnalyzer/
 │       ├── Public/
-│       │   ├── BlueprintExportData.h   # Data structures
-│       │   └── BlueprintExportReader.h # Reader API
+│       │   ├── BlueprintExportData.h     # Data structures (14 USTRUCTs)
+│       │   └── BlueprintExportReader.h   # Reader API
 │       └── Private/
-│           ├── BlueprintExportReader.cpp
-│           ├── BlueprintExportCommandlet.cpp
+│           ├── BlueprintExportReader.cpp  # Core implementation
+│           ├── BlueprintExportCommandlet.cpp # CLI + output formatting
+│           ├── BlueprintExportServer.cpp  # Named pipe server + JSON-RPC
 │           └── BlueprintAnalyzerModule.*
-├── claude-code-skills/             # Claude Code skill
-│   └── blueprint-export/SKILL.md
-├── CLAUDE.md                       # AI assistant instructions
+├── cmd/digbp/                      # Go CLI tool
+│   └── main.go
+├── internal/                       # Go internal packages
+│   ├── config/config.go            # Config file loading
+│   ├── pipe/client.go              # Named pipe client
+│   ├── rpc/rpc.go                  # JSON-RPC 2.0 client
+│   └── server/manager.go           # Server lifecycle management
+├── claude-code-skills/             # Claude Code skills
+│   ├── digbp/SKILL.md              # digbp skill (recommended)
+│   └── blueprint-export/           # Direct commandlet skill (example)
+├── go.mod
+├── CLAUDE.md
 └── README.md
 ```
 
@@ -212,15 +330,25 @@ bp-analyzer/
 MSYS_NO_PATHCONV=1 UE4Editor-Cmd.exe ... -path=/Game/...
 ```
 
+This is not needed with `digbp` — only the direct commandlet invocation.
+
 ### Blueprint Not Found
 
 - Use exact asset paths (Copy Reference from Content Browser)
 - Paths must start with `/Game/` or `/Engine/`
 - Blueprint must be saved
 
-### Slow Startup
+### Server Won't Start
 
-The commandlet requires loading the asset registry. First invocation may take 10-30 seconds depending on project size.
+- Check `~/.digbp.yaml` paths are correct
+- Verify UE4Editor-Cmd.exe path exists
+- Verify .uproject path exists
+- Check if another server is already running: `digbp status`
+- Try starting manually: `digbp start` and watch stderr for errors
+
+### Slow First Command
+
+The first `digbp` command in a session launches the UE4 server, which takes 30-60s to load the asset registry. Subsequent commands are fast. Use `digbp start` ahead of time to pre-warm the server.
 
 ## License
 

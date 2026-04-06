@@ -2,6 +2,7 @@
 // Commandlet implementation for CLI Blueprint analysis
 
 #include "BlueprintExportCommandlet.h"
+#include "BlueprintExportServer.h"
 #include "BlueprintExportReader.h"
 #include "BlueprintExportData.h"
 #include "Dom/JsonObject.h"
@@ -230,6 +231,30 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 		AssetRegistry.SearchAllAssets(true);
 	}
 
+	// Server mode: persistent named pipe server
+	if (Switches.Contains(TEXT("pipeserver")))
+	{
+		FString ServerPipeName = TEXT("blueprintexport");
+		if (ParamsMap.Contains(TEXT("pipename")))
+		{
+			ServerPipeName = ParamsMap[TEXT("pipename")];
+		}
+
+		FBlueprintExportServer Server(this, ServerPipeName);
+		if (Server.Start())
+		{
+			// Marker for clients to detect server readiness
+			UE_LOG(LogTemp, Display, TEXT("__SERVER_READY__%s"), *ServerPipeName);
+			Server.Run();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("Failed to start server"));
+			return 1;
+		}
+		return 0;
+	}
+
 	// Execute appropriate operation based on parameters
 	if (!BlueprintPath.IsEmpty())
 	{
@@ -294,77 +319,96 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	return 0;
 }
 
-void UBlueprintExportCommandlet::ExportBlueprint(const FString& BlueprintPath, bool bAnalyze)
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportBlueprintToJson(const FString& BlueprintPath, bool bAnalyze)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	FBlueprintExportData ExportData = Reader->ExportBlueprint(BlueprintPath);
 
 	if (ExportData.BlueprintName.IsEmpty())
 	{
-		OutputError(FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
-		return;
+		TSharedPtr<FJsonObject> Error = MakeShareable(new FJsonObject);
+		Error->SetBoolField(TEXT("success"), false);
+		Error->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
+		return Error;
 	}
 
-	// Output based on mode
+	TSharedPtr<FJsonObject> JsonObject = BlueprintDataToJson(ExportData, true);
+	JsonObject->SetBoolField(TEXT("success"), true);
+
+	if (bAnalyze)
+	{
+		TSharedPtr<FJsonObject> Analysis = MakeShareable(new FJsonObject);
+
+		int32 TotalNodes = 0;
+		int32 TotalConnections = 0;
+
+		for (const FBlueprintFunctionData& Func : ExportData.Functions)
+		{
+			TotalNodes += Func.Nodes.Num();
+			TotalConnections += Func.Connections.Num();
+		}
+
+		for (const FBlueprintEventData& Event : ExportData.EventGraph)
+		{
+			TotalNodes += Event.Nodes.Num();
+			TotalConnections += Event.Connections.Num();
+		}
+
+		Analysis->SetNumberField(TEXT("total_functions"), ExportData.Functions.Num());
+		Analysis->SetNumberField(TEXT("total_variables"), ExportData.Variables.Num());
+		Analysis->SetNumberField(TEXT("total_events"), ExportData.EventGraph.Num());
+		Analysis->SetNumberField(TEXT("total_nodes"), TotalNodes);
+		Analysis->SetNumberField(TEXT("total_connections"), TotalConnections);
+		Analysis->SetNumberField(TEXT("total_components"), ExportData.Components.Num());
+		Analysis->SetNumberField(TEXT("total_references"), ExportData.References.Num());
+
+		float Complexity = TotalNodes * 1.0f + TotalConnections * 0.5f +
+			ExportData.Functions.Num() * 2.0f + ExportData.Variables.Num() * 0.5f;
+		Analysis->SetNumberField(TEXT("complexity_score"), Complexity);
+
+		JsonObject->SetObjectField(TEXT("analysis"), Analysis);
+	}
+
+	return JsonObject;
+}
+
+FString UBlueprintExportCommandlet::ExportBlueprintToText(const FString& BlueprintPath, EBlueprintExportMode Mode)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	FBlueprintExportData ExportData = Reader->ExportBlueprint(BlueprintPath);
+
+	if (ExportData.BlueprintName.IsEmpty())
+	{
+		return FString::Printf(TEXT("Error: Failed to load blueprint: %s"), *BlueprintPath);
+	}
+
+	if (Mode == EBlueprintExportMode::Skeleton)
+	{
+		return BlueprintToSkeleton(ExportData);
+	}
+	return BlueprintToCompact(ExportData);
+}
+
+void UBlueprintExportCommandlet::ExportBlueprint(const FString& BlueprintPath, bool bAnalyze)
+{
 	switch (OutputMode)
 	{
 	case EBlueprintExportMode::Compact:
-		OutputText(BlueprintToCompact(ExportData));
+		OutputText(ExportBlueprintToText(BlueprintPath, EBlueprintExportMode::Compact));
 		break;
 
 	case EBlueprintExportMode::Skeleton:
-		OutputText(BlueprintToSkeleton(ExportData));
+		OutputText(ExportBlueprintToText(BlueprintPath, EBlueprintExportMode::Skeleton));
 		break;
 
 	case EBlueprintExportMode::Json:
 	default:
-		{
-			TSharedPtr<FJsonObject> JsonObject = BlueprintDataToJson(ExportData, true);
-			JsonObject->SetBoolField(TEXT("success"), true);
-
-			if (bAnalyze)
-			{
-				// Add complexity analysis
-				TSharedPtr<FJsonObject> Analysis = MakeShareable(new FJsonObject);
-
-				int32 TotalNodes = 0;
-				int32 TotalConnections = 0;
-
-				for (const FBlueprintFunctionData& Func : ExportData.Functions)
-				{
-					TotalNodes += Func.Nodes.Num();
-					TotalConnections += Func.Connections.Num();
-				}
-
-				for (const FBlueprintEventData& Event : ExportData.EventGraph)
-				{
-					TotalNodes += Event.Nodes.Num();
-					TotalConnections += Event.Connections.Num();
-				}
-
-				Analysis->SetNumberField(TEXT("total_functions"), ExportData.Functions.Num());
-				Analysis->SetNumberField(TEXT("total_variables"), ExportData.Variables.Num());
-				Analysis->SetNumberField(TEXT("total_events"), ExportData.EventGraph.Num());
-				Analysis->SetNumberField(TEXT("total_nodes"), TotalNodes);
-				Analysis->SetNumberField(TEXT("total_connections"), TotalConnections);
-				Analysis->SetNumberField(TEXT("total_components"), ExportData.Components.Num());
-				Analysis->SetNumberField(TEXT("total_references"), ExportData.References.Num());
-
-				// Complexity score (simple heuristic)
-				float Complexity = TotalNodes * 1.0f + TotalConnections * 0.5f +
-					ExportData.Functions.Num() * 2.0f + ExportData.Variables.Num() * 0.5f;
-				Analysis->SetNumberField(TEXT("complexity_score"), Complexity);
-
-				JsonObject->SetObjectField(TEXT("analysis"), Analysis);
-			}
-
-			OutputJson(JsonObject);
-		}
+		OutputJson(ExportBlueprintToJson(BlueprintPath, bAnalyze));
 		break;
 	}
 }
 
-void UBlueprintExportCommandlet::ExportDirectory(const FString& DirectoryPath, bool bRecursive)
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportDirectoryToJson(const FString& DirectoryPath, bool bRecursive)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
@@ -393,10 +437,15 @@ void UBlueprintExportCommandlet::ExportDirectory(const FString& DirectoryPath, b
 	Result->SetNumberField(TEXT("count"), BlueprintArray.Num());
 	Result->SetArrayField(TEXT("blueprints"), BlueprintArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::GetCppUsage(const FString& BlueprintPath)
+void UBlueprintExportCommandlet::ExportDirectory(const FString& DirectoryPath, bool bRecursive)
+{
+	OutputJson(ExportDirectoryToJson(DirectoryPath, bRecursive));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::GetCppUsageToJson(const FString& BlueprintPath)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TArray<FBlueprintCppFunctionUsage> Usage = Reader->GetBlueprintCppFunctionUsage(BlueprintPath);
@@ -413,10 +462,15 @@ void UBlueprintExportCommandlet::GetCppUsage(const FString& BlueprintPath)
 	Result->SetNumberField(TEXT("count"), UsageArray.Num());
 	Result->SetArrayField(TEXT("cpp_usage"), UsageArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::GetReferences(const FString& BlueprintPath)
+void UBlueprintExportCommandlet::GetCppUsage(const FString& BlueprintPath)
+{
+	OutputJson(GetCppUsageToJson(BlueprintPath));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::GetReferencesToJson(const FString& BlueprintPath)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TArray<FBlueprintReferenceData> References = Reader->GetBlueprintReferences(BlueprintPath, true);
@@ -433,10 +487,15 @@ void UBlueprintExportCommandlet::GetReferences(const FString& BlueprintPath)
 	Result->SetNumberField(TEXT("count"), RefArray.Num());
 	Result->SetArrayField(TEXT("references"), RefArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::ExportGraph(const FString& RootPath, int32 MaxDepth)
+void UBlueprintExportCommandlet::GetReferences(const FString& BlueprintPath)
+{
+	OutputJson(GetReferencesToJson(BlueprintPath));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportGraphToJson(const FString& RootPath, int32 MaxDepth)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TMap<FString, FBlueprintExportData> Graph = Reader->ExportBlueprintGraph(RootPath, MaxDepth, true);
@@ -444,7 +503,7 @@ void UBlueprintExportCommandlet::ExportGraph(const FString& RootPath, int32 MaxD
 	TSharedPtr<FJsonObject> GraphObj = MakeShareable(new FJsonObject);
 	for (auto& Pair : Graph)
 	{
-		GraphObj->SetObjectField(Pair.Key, BlueprintDataToJson(Pair.Value, OutputMode == EBlueprintExportMode::Json));
+		GraphObj->SetObjectField(Pair.Key, BlueprintDataToJson(Pair.Value, true));
 	}
 
 	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
@@ -454,10 +513,15 @@ void UBlueprintExportCommandlet::ExportGraph(const FString& RootPath, int32 MaxD
 	Result->SetNumberField(TEXT("blueprint_count"), Graph.Num());
 	Result->SetObjectField(TEXT("graph"), GraphObj);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::FindBlueprintsCallingFunction(const FString& FunctionName, const FString& ClassName, const TArray<FString>& SearchPaths)
+void UBlueprintExportCommandlet::ExportGraph(const FString& RootPath, int32 MaxDepth)
+{
+	OutputJson(ExportGraphToJson(RootPath, MaxDepth));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindCallersToJson(const FString& FunctionName, const FString& ClassName, const TArray<FString>& SearchPaths)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TArray<FBlueprintCppFunctionUsage> Results = Reader->FindBlueprintsCallingFunction(FunctionName, ClassName, SearchPaths);
@@ -475,10 +539,15 @@ void UBlueprintExportCommandlet::FindBlueprintsCallingFunction(const FString& Fu
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("callers"), ResultArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::FindNativeEventImplementations(const TArray<FString>& SearchPaths)
+void UBlueprintExportCommandlet::FindBlueprintsCallingFunction(const FString& FunctionName, const FString& ClassName, const TArray<FString>& SearchPaths)
+{
+	OutputJson(FindCallersToJson(FunctionName, ClassName, SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindNativeEventsToJson(const TArray<FString>& SearchPaths)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TArray<FBlueprintCppFunctionUsage> Results = Reader->FindBlueprintNativeEventImplementations(SearchPaths);
@@ -494,10 +563,15 @@ void UBlueprintExportCommandlet::FindNativeEventImplementations(const TArray<FSt
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("implementations"), ResultArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths)
+void UBlueprintExportCommandlet::FindNativeEventImplementations(const TArray<FString>& SearchPaths)
+{
+	OutputJson(FindNativeEventsToJson(SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindPropertyToJson(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TArray<FBlueprintPropertySearchResult> Results = Reader->FindBlueprintsWithPropertyValue(PropertyName, PropertyValue, ParentClassName, SearchPaths);
@@ -529,10 +603,15 @@ void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& Prope
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("results"), ResultArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::FindImplementableEventImplementations(const FString& EventName, const TArray<FString>& SearchPaths)
+void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths)
+{
+	OutputJson(FindPropertyToJson(PropertyName, PropertyValue, ParentClassName, SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindImplementableEventsToJson(const FString& EventName, const TArray<FString>& SearchPaths)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	TArray<FBlueprintCppFunctionUsage> Results = Reader->FindBlueprintImplementableEventImplementations(EventName, SearchPaths);
@@ -549,10 +628,15 @@ void UBlueprintExportCommandlet::FindImplementableEventImplementations(const FSt
 	Result->SetNumberField(TEXT("count"), ResultArray.Num());
 	Result->SetArrayField(TEXT("implementations"), ResultArray);
 
-	OutputJson(Result);
+	return Result;
 }
 
-void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly)
+void UBlueprintExportCommandlet::FindImplementableEventImplementations(const FString& EventName, const TArray<FString>& SearchPaths)
+{
+	OutputJson(FindImplementableEventsToJson(EventName, SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportRefViewToJson(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	FAssetReferenceGraph Graph = Reader->BuildReferenceViewerGraph(AssetPath, DependencyDepth, ReferencerDepth, true, bBlueprintsOnly);
@@ -583,7 +667,6 @@ void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath,
 		NodeObj->SetBoolField(TEXT("is_native"), Node.bIsNativeClass);
 		NodeObj->SetBoolField(TEXT("is_hard_ref"), Node.bIsHardReference);
 
-		// Dependencies
 		TArray<TSharedPtr<FJsonValue>> DepsArray;
 		for (const FString& Dep : Node.Dependencies)
 		{
@@ -591,7 +674,6 @@ void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath,
 		}
 		NodeObj->SetArrayField(TEXT("dependencies"), DepsArray);
 
-		// Referencers
 		TArray<TSharedPtr<FJsonValue>> RefsArray;
 		for (const FString& Ref : Node.Referencers)
 		{
@@ -603,25 +685,30 @@ void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath,
 	}
 	Result->SetObjectField(TEXT("nodes"), NodesObj);
 
-	// Also create a compact summary for easier reading
+	return Result;
+}
+
+void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly)
+{
+	// Compact mode gets a text summary
 	if (OutputMode == EBlueprintExportMode::Compact)
 	{
+		UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+		FAssetReferenceGraph Graph = Reader->BuildReferenceViewerGraph(AssetPath, DependencyDepth, ReferencerDepth, true, bBlueprintsOnly);
+
 		FString CompactOutput;
 		CompactOutput += TEXT("# Reference Viewer: ") + Graph.RootAssetPath + TEXT("\n\n");
 
-		// Separate nodes by depth for cleaner output
 		TMap<int32, TArray<const FAssetReferenceNode*>> NodesByDepth;
 		for (const auto& Pair : Graph.Nodes)
 		{
 			NodesByDepth.FindOrAdd(Pair.Value.Depth).Add(&Pair.Value);
 		}
 
-		// Sort depths
 		TArray<int32> Depths;
 		NodesByDepth.GetKeys(Depths);
 		Depths.Sort();
 
-		// Output referencers first (negative depths, but show positive for clarity)
 		CompactOutput += TEXT("## What Uses This Asset (Referencers)\n");
 		for (int32 Depth : Depths)
 		{
@@ -636,7 +723,6 @@ void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath,
 			}
 		}
 
-		// Root
 		CompactOutput += TEXT("\n## Root Asset\n");
 		if (const FAssetReferenceNode* Root = Graph.Nodes.Find(Graph.RootAssetPath))
 		{
@@ -644,7 +730,6 @@ void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath,
 			CompactOutput += FString::Printf(TEXT("  %s %s (%s)\n"), *TypeTag, *Root->AssetName, *Root->AssetClass);
 		}
 
-		// Dependencies (positive depths)
 		CompactOutput += TEXT("\n## What This Asset Uses (Dependencies)\n");
 		for (int32 Depth : Depths)
 		{
@@ -670,7 +755,7 @@ void UBlueprintExportCommandlet::ExportReferenceViewer(const FString& AssetPath,
 		return;
 	}
 
-	OutputJson(Result);
+	OutputJson(ExportRefViewToJson(AssetPath, DependencyDepth, ReferencerDepth, bBlueprintsOnly));
 }
 
 void UBlueprintExportCommandlet::OutputJson(const TSharedPtr<FJsonObject>& JsonObject)

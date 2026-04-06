@@ -1,0 +1,362 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/cocoonai/bp-analyzer/internal/config"
+	"github.com/cocoonai/bp-analyzer/internal/rpc"
+	"github.com/cocoonai/bp-analyzer/internal/server"
+	"github.com/spf13/cobra"
+)
+
+var (
+	cfg       *config.Config
+	flagPretty bool
+)
+
+func main() {
+	cfg = config.Load()
+
+	root := &cobra.Command{
+		Use:   "digbp",
+		Short: "CLI tool for the Blueprint Analyzer server",
+		Long:  "digbp communicates with a persistent UE4 Blueprint Analyzer server via named pipes.",
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Apply flag overrides to config
+			if v, _ := cmd.Flags().GetString("editor-cmd"); v != "" {
+				cfg.EditorCmd = v
+			}
+			if v, _ := cmd.Flags().GetString("uproject"); v != "" {
+				cfg.UProject = v
+			}
+			if v, _ := cmd.Flags().GetString("pipe-name"); v != "" {
+				cfg.PipeName = v
+			}
+		},
+	}
+
+	// Persistent flags
+	root.PersistentFlags().String("editor-cmd", "", "Path to UE4Editor-Cmd.exe")
+	root.PersistentFlags().String("uproject", "", "Path to .uproject file")
+	root.PersistentFlags().String("pipe-name", "", "Named pipe name (default: blueprintexport)")
+	root.PersistentFlags().BoolVar(&flagPretty, "pretty", false, "Pretty-print JSON output")
+
+	root.AddCommand(
+		startCmd(),
+		stopCmd(),
+		statusCmd(),
+		exportCmd(),
+		listCmd(),
+		cppusageCmd(),
+		referencesCmd(),
+		graphCmd(),
+		refviewCmd(),
+		findcallersCmd(),
+		nativeeventsCmd(),
+		findeventsCmd(),
+		findpropCmd(),
+	)
+
+	if err := root.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// callServer ensures the server is running, sends an RPC, and prints the result.
+func callServer(method string, params interface{}) error {
+	if err := server.EnsureRunning(cfg); err != nil {
+		return err
+	}
+	result, err := rpc.Call(cfg.PipeName, method, params)
+	if err != nil {
+		return err
+	}
+	return printResult(result)
+}
+
+func printResult(result json.RawMessage) error {
+	if flagPretty {
+		var v interface{}
+		if err := json.Unmarshal(result, &v); err == nil {
+			pretty, _ := json.MarshalIndent(v, "", "  ")
+			fmt.Println(string(pretty))
+			return nil
+		}
+	}
+	fmt.Println(string(result))
+	return nil
+}
+
+// --- Lifecycle commands ---
+
+func startCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the UE4 Blueprint Analyzer server",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if server.IsRunning(cfg.PipeName) {
+				fmt.Println("Server is already running")
+				return nil
+			}
+			return server.Start(cfg)
+		},
+	}
+}
+
+func stopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the UE4 Blueprint Analyzer server",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := server.Stop(cfg.PipeName); err != nil {
+				return fmt.Errorf("failed to stop server: %w", err)
+			}
+			fmt.Println("Server stopped")
+			return nil
+		},
+	}
+}
+
+func statusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Check if the server is running",
+		Run: func(cmd *cobra.Command, args []string) {
+			if server.IsRunning(cfg.PipeName) {
+				fmt.Println("Server is running")
+			} else {
+				fmt.Println("Server is not running")
+				os.Exit(1)
+			}
+		},
+	}
+}
+
+// --- Operation commands ---
+
+func exportCmd() *cobra.Command {
+	var (
+		path    string
+		analyze bool
+		mode    string
+	)
+	cmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export a Blueprint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{"path": path}
+			if analyze {
+				params["analyze"] = true
+			}
+			if mode != "" {
+				params["mode"] = mode
+			}
+			return callServer("export", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().BoolVar(&analyze, "analyze", false, "Include complexity analysis")
+	cmd.Flags().StringVar(&mode, "mode", "", "Output mode: json, compact, skeleton (default: json)")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func listCmd() *cobra.Command {
+	var (
+		dir       string
+		noRecurse bool
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List Blueprints in a directory",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"dir":       dir,
+				"recursive": !noRecurse,
+			}
+			return callServer("list", params)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory path (required)")
+	cmd.Flags().BoolVar(&noRecurse, "no-recurse", false, "Don't search subdirectories")
+	_ = cmd.MarkFlagRequired("dir")
+	return cmd
+}
+
+func cppusageCmd() *cobra.Command {
+	var path string
+	cmd := &cobra.Command{
+		Use:   "cppusage",
+		Short: "Get C++ function usage for a Blueprint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("cppusage", map[string]interface{}{"path": path})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func referencesCmd() *cobra.Command {
+	var path string
+	cmd := &cobra.Command{
+		Use:   "references",
+		Short: "Get asset references from a Blueprint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("references", map[string]interface{}{"path": path})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func graphCmd() *cobra.Command {
+	var (
+		path  string
+		depth int
+	)
+	cmd := &cobra.Command{
+		Use:   "graph",
+		Short: "Export dependency graph",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"path":  path,
+				"depth": depth,
+			}
+			return callServer("graph", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Root Blueprint path (required)")
+	cmd.Flags().IntVar(&depth, "depth", 3, "Maximum graph depth")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func refviewCmd() *cobra.Command {
+	var (
+		path       string
+		refDepth   int
+		referDepth int
+		bpOnly     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "refview",
+		Short: "Reference viewer (bidirectional dependency graph)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"path":       path,
+				"refdepth":   refDepth,
+				"referdepth": referDepth,
+				"bponly":     bpOnly,
+			}
+			return callServer("refview", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Asset path (required)")
+	cmd.Flags().IntVar(&refDepth, "refdepth", 3, "Dependency traversal depth")
+	cmd.Flags().IntVar(&referDepth, "referdepth", 3, "Referencer traversal depth")
+	cmd.Flags().BoolVar(&bpOnly, "bponly", false, "Only include Blueprint assets")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func findcallersCmd() *cobra.Command {
+	var (
+		dir       string
+		function  string
+		className string
+	)
+	cmd := &cobra.Command{
+		Use:   "findcallers",
+		Short: "Find Blueprints calling a specific function",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"dir":  dir,
+				"func": function,
+			}
+			if className != "" {
+				params["class"] = className
+			}
+			return callServer("findcallers", params)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required)")
+	cmd.Flags().StringVar(&function, "func", "", "Function name to find (required)")
+	cmd.Flags().StringVar(&className, "class", "", "Filter by class name")
+	_ = cmd.MarkFlagRequired("dir")
+	_ = cmd.MarkFlagRequired("func")
+	return cmd
+}
+
+func nativeeventsCmd() *cobra.Command {
+	var dir string
+	cmd := &cobra.Command{
+		Use:   "nativeevents",
+		Short: "Find native event implementations",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("nativeevents", map[string]interface{}{"dir": dir})
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required)")
+	_ = cmd.MarkFlagRequired("dir")
+	return cmd
+}
+
+func findeventsCmd() *cobra.Command {
+	var (
+		dir   string
+		event string
+	)
+	cmd := &cobra.Command{
+		Use:   "findevents",
+		Short: "Find implementable event implementations",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"dir":   dir,
+				"event": event,
+			}
+			return callServer("findevents", params)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required)")
+	cmd.Flags().StringVar(&event, "event", "", "Event name to find (required)")
+	_ = cmd.MarkFlagRequired("dir")
+	_ = cmd.MarkFlagRequired("event")
+	return cmd
+}
+
+func findpropCmd() *cobra.Command {
+	var (
+		dir         string
+		prop        string
+		value       string
+		parentClass string
+	)
+	cmd := &cobra.Command{
+		Use:   "findprop",
+		Short: "Find Blueprints with a specific CDO property",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"dir":  dir,
+				"prop": prop,
+			}
+			if value != "" {
+				params["value"] = value
+			}
+			if parentClass != "" {
+				params["parentclass"] = parentClass
+			}
+			return callServer("findprop", params)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required)")
+	cmd.Flags().StringVar(&prop, "prop", "", "Property name to find (required)")
+	cmd.Flags().StringVar(&value, "value", "", "Filter by property value")
+	cmd.Flags().StringVar(&parentClass, "parentclass", "", "Filter by parent class")
+	_ = cmd.MarkFlagRequired("dir")
+	_ = cmd.MarkFlagRequired("prop")
+	return cmd
+}
