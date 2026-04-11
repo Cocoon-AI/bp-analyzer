@@ -29,8 +29,10 @@ static bool IsBlueprintImplementableEvent(const UFunction* Function)
 #include "K2Node_CustomEvent.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_Tunnel.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -386,6 +388,51 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 		ExportData.Functions.Add(FuncData);
 	}
 
+	// Locally-defined macros. Macro graphs use UK2Node_Tunnel (not FunctionEntry/Result)
+	// as their entry and exit nodes. From the tunnel's perspective, output-direction
+	// data pins feed INTO the macro body (so they represent the macro's formal inputs),
+	// and input-direction pins receive FROM the body (representing formal outputs).
+	// Exec pins follow the same shape but we skip them here for parity with the
+	// function extraction above — the full pin set is still visible via Nodes.
+	for (UEdGraph* Graph : Blueprint->MacroGraphs)
+	{
+		if (!Graph) continue;
+
+		FBlueprintFunctionData MacroData;
+		MacroData.FunctionName = Graph->GetName();
+		MacroData.Nodes = ExtractNodes(Graph);
+		MacroData.Connections = ExtractConnections(Graph);
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_Tunnel* TunnelNode = Cast<UK2Node_Tunnel>(Node);
+			if (!TunnelNode) continue;
+			// FunctionEntry/FunctionResult inherit from Tunnel via FunctionTerminator —
+			// those would indicate a function graph, not a macro, so skip them.
+			if (Cast<UK2Node_FunctionEntry>(Node) || Cast<UK2Node_FunctionResult>(Node)) continue;
+
+			for (UEdGraphPin* Pin : TunnelNode->Pins)
+			{
+				if (!Pin) continue;
+				if (Pin->PinName == UEdGraphSchema_K2::PN_Then ||
+					Pin->PinName == UEdGraphSchema_K2::PN_Execute)
+				{
+					continue;
+				}
+				if (Pin->Direction == EGPD_Output)
+				{
+					MacroData.Inputs.Add(ExtractPinData(Pin));
+				}
+				else if (Pin->Direction == EGPD_Input)
+				{
+					MacroData.Outputs.Add(ExtractPinData(Pin));
+				}
+			}
+		}
+
+		ExportData.Macros.Add(MacroData);
+	}
+
 	// Event graphs (Ubergraph pages)
 	for (UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
@@ -708,6 +755,100 @@ TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::FindBlueprintsCalling
 
 						Results.Add(Usage);
 					}
+				}
+			}
+		}
+	}
+
+	return Results;
+}
+
+TArray<FBlueprintVariableUsage> UBlueprintExportReader::FindBlueprintsUsingVariable(
+	const FString& VariableName,
+	const FString& Kind,
+	const TArray<FString>& SearchPaths)
+{
+	TArray<FBlueprintVariableUsage> Results;
+
+	const bool bIncludeGet = Kind.IsEmpty() || Kind.Equals(TEXT("any"), ESearchCase::IgnoreCase) || Kind.Equals(TEXT("get"), ESearchCase::IgnoreCase);
+	const bool bIncludeSet = Kind.IsEmpty() || Kind.Equals(TEXT("any"), ESearchCase::IgnoreCase) || Kind.Equals(TEXT("set"), ESearchCase::IgnoreCase);
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> AssetList;
+		AssetRegistry.GetAssetsByPath(FName(*SearchPath), AssetList, true);
+
+		for (const FAssetData& AssetData : AssetList)
+		{
+			if (!AssetData.AssetClass.ToString().Contains(TEXT("Blueprint")))
+			{
+				continue;
+			}
+
+			UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+			if (!Blueprint)
+			{
+				continue;
+			}
+
+			TArray<UEdGraph*> AllGraphs;
+#if WITH_EDITORONLY_DATA
+			AllGraphs.Append(Blueprint->FunctionGraphs);
+			AllGraphs.Append(Blueprint->UbergraphPages);
+			AllGraphs.Append(Blueprint->MacroGraphs);
+#endif
+
+			for (UEdGraph* Graph : AllGraphs)
+			{
+				if (!Graph) continue;
+
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					// K2Node_VariableSet inherits from K2Node_Variable, as does K2Node_VariableGet.
+					// Check concrete types so we can tag the access kind.
+					FString AccessKind;
+					FName VarName;
+					UClass* OwningClass = nullptr;
+
+					if (UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(Node))
+					{
+						if (!bIncludeSet) continue;
+						AccessKind = TEXT("set");
+						VarName = SetNode->GetVarName();
+						// GetMemberParentClass(nullptr) returns the explicit parent class if the
+						// reference names one, or nullptr for self-scope vars. That's fine — a
+						// self-scope miss just means the BlueprintPath already tells the caller
+						// where the var lives.
+						OwningClass = SetNode->VariableReference.GetMemberParentClass(nullptr);
+					}
+					else if (UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(Node))
+					{
+						if (!bIncludeGet) continue;
+						AccessKind = TEXT("get");
+						VarName = GetNode->GetVarName();
+						OwningClass = GetNode->VariableReference.GetMemberParentClass(nullptr);
+					}
+					else
+					{
+						continue;
+					}
+
+					if (VarName.ToString() != VariableName)
+					{
+						continue;
+					}
+
+					FBlueprintVariableUsage Usage;
+					Usage.VariableName = VarName.ToString();
+					Usage.VariableClass = OwningClass ? OwningClass->GetName() : TEXT("");
+					Usage.BlueprintPath = Blueprint->GetPathName();
+					Usage.NodeGuid = Node->NodeGuid.ToString();
+					Usage.GraphName = Graph->GetName();
+					Usage.AccessKind = AccessKind;
+					Results.Add(Usage);
 				}
 			}
 		}

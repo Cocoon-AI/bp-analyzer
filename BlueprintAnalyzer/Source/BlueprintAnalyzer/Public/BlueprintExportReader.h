@@ -66,6 +66,20 @@ public:
 	TArray<FBlueprintCppFunctionUsage> FindBlueprintsCallingFunction(const FString& FunctionName, const FString& FunctionClass, UPARAM(ref) const TArray<FString>& SearchPaths);
 
 	/**
+	 * Find all blueprints reading from or writing to a named variable
+	 * Scans K2Node_VariableGet and K2Node_VariableSet nodes across all graphs.
+	 * @param VariableName Name of the variable to search for
+	 * @param Kind "get" | "set" | "any" (default "any")
+	 * @param SearchPaths Paths to search in (empty = search all)
+	 * @return Array of variable usage sites
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	TArray<FBlueprintVariableUsage> FindBlueprintsUsingVariable(
+		const FString& VariableName,
+		const FString& Kind,
+		UPARAM(ref) const TArray<FString>& SearchPaths);
+
+	/**
 	 * Find all blueprints implementing BlueprintNativeEvents
 	 * @param SearchPaths Paths to search in (empty = search all)
 	 * @return Array of function usage data for implemented events

@@ -68,8 +68,9 @@ public:
 	// Export single blueprint as JSON
 	TSharedPtr<FJsonObject> ExportBlueprintToJson(const FString& BlueprintPath, bool bAnalyze);
 
-	// Export single blueprint as text (compact or skeleton)
-	FString ExportBlueprintToText(const FString& BlueprintPath, EBlueprintExportMode Mode);
+	// Export single blueprint as text (compact or skeleton). When bAnalyze is
+	// true, the output is prefixed with a comment-style analysis header.
+	FString ExportBlueprintToText(const FString& BlueprintPath, EBlueprintExportMode Mode, bool bAnalyze = false);
 
 	// List blueprints in directory
 	TSharedPtr<FJsonObject> ExportDirectoryToJson(const FString& DirectoryPath, bool bRecursive);
@@ -85,6 +86,9 @@ public:
 
 	// Find blueprints calling specific function
 	TSharedPtr<FJsonObject> FindCallersToJson(const FString& FunctionName, const FString& ClassName, const TArray<FString>& SearchPaths);
+
+	// Find blueprints reading/writing a named variable
+	TSharedPtr<FJsonObject> FindVarUsesToJson(const FString& VariableName, const FString& Kind, const TArray<FString>& SearchPaths);
 
 	// Find native event implementations
 	TSharedPtr<FJsonObject> FindNativeEventsToJson(const TArray<FString>& SearchPaths);
@@ -106,6 +110,7 @@ private:
 	void GetReferences(const FString& BlueprintPath);
 	void ExportGraph(const FString& RootPath, int32 MaxDepth);
 	void FindBlueprintsCallingFunction(const FString& FunctionName, const FString& ClassName, const TArray<FString>& SearchPaths);
+	void FindBlueprintsUsingVariable(const FString& VariableName, const FString& Kind, const TArray<FString>& SearchPaths);
 	void FindNativeEventImplementations(const TArray<FString>& SearchPaths);
 	void FindImplementableEventImplementations(const FString& EventName, const TArray<FString>& SearchPaths);
 	void FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths);

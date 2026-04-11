@@ -313,6 +313,12 @@ struct BLUEPRINTANALYZER_API FBlueprintExportData
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	TArray<FBlueprintFunctionData> Functions;
 
+	// Locally-defined macros. Stored as FBlueprintFunctionData because macros
+	// are structurally graphs-with-pins: the tunnel entry/exit nodes supply
+	// Inputs/Outputs, and the body nodes/connections match the function shape.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FBlueprintFunctionData> Macros;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	TArray<FBlueprintEventData> EventGraph;
 
@@ -446,6 +452,35 @@ struct BLUEPRINTANALYZER_API FAssetReferenceGraph
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	int32 NativeClassCount = 0;
+};
+
+/**
+ * Variable usage result (K2Node_VariableGet / K2Node_VariableSet sites)
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintVariableUsage
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString VariableName;
+
+	// Class that owns the variable (empty if the BP-local variable's owner couldn't be resolved).
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString VariableClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString BlueprintPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString NodeGuid;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString GraphName;
+
+	// "get" or "set"
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString AccessKind;
 };
 
 /**

@@ -21,6 +21,53 @@
 // Static Helper Functions
 //------------------------------------------------------------------------------
 
+// Compute analysis metrics (node/connection counts, complexity score) over a
+// BP export. Kept as a free function so all three output modes share it.
+struct FBlueprintAnalysis
+{
+	int32 TotalFunctions = 0;
+	int32 TotalMacros = 0;
+	int32 TotalVariables = 0;
+	int32 TotalEvents = 0;
+	int32 TotalNodes = 0;
+	int32 TotalConnections = 0;
+	int32 TotalComponents = 0;
+	int32 TotalReferences = 0;
+	float ComplexityScore = 0.0f;
+};
+
+static FBlueprintAnalysis ComputeAnalysis(const FBlueprintExportData& ExportData)
+{
+	FBlueprintAnalysis A;
+	A.TotalFunctions = ExportData.Functions.Num();
+	A.TotalMacros = ExportData.Macros.Num();
+	A.TotalVariables = ExportData.Variables.Num();
+	A.TotalEvents = ExportData.EventGraph.Num();
+	A.TotalComponents = ExportData.Components.Num();
+	A.TotalReferences = ExportData.References.Num();
+
+	for (const FBlueprintFunctionData& Func : ExportData.Functions)
+	{
+		A.TotalNodes += Func.Nodes.Num();
+		A.TotalConnections += Func.Connections.Num();
+	}
+	for (const FBlueprintFunctionData& Macro : ExportData.Macros)
+	{
+		A.TotalNodes += Macro.Nodes.Num();
+		A.TotalConnections += Macro.Connections.Num();
+	}
+	for (const FBlueprintEventData& Event : ExportData.EventGraph)
+	{
+		A.TotalNodes += Event.Nodes.Num();
+		A.TotalConnections += Event.Connections.Num();
+	}
+
+	A.ComplexityScore = A.TotalNodes * 1.0f + A.TotalConnections * 0.5f +
+		A.TotalFunctions * 2.0f + A.TotalVariables * 0.5f;
+	return A;
+}
+
+
 // Helper to check if a node should be skipped in output (reroute, knot nodes)
 static bool ShouldSkipNode(const FBlueprintNodeData& Node)
 {
@@ -149,6 +196,8 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	FString PropertyValue;
 	FString ParentClassName;
 	FString EventName;
+	FString VarSearchName;
+	FString VarSearchKind;
 	bool bAnalyze = Switches.Contains(TEXT("analyze"));
 	bool bRecursive = !Switches.Contains(TEXT("norecurse"));
 	bool bCppUsage = Switches.Contains(TEXT("cppusage"));
@@ -220,6 +269,14 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	{
 		EventName = ParamsMap[TEXT("event")];
 	}
+	if (ParamsMap.Contains(TEXT("var")))
+	{
+		VarSearchName = ParamsMap[TEXT("var")];
+	}
+	if (ParamsMap.Contains(TEXT("varkind")))
+	{
+		VarSearchKind = ParamsMap[TEXT("varkind")];
+	}
 
 	// Ensure asset registry is ready
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -287,6 +344,12 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 			SearchPaths.Add(DirectoryPath);
 			FindBlueprintsCallingFunction(FunctionName, ClassName, SearchPaths);
 		}
+		else if (!VarSearchName.IsEmpty())
+		{
+			TArray<FString> SearchPaths;
+			SearchPaths.Add(DirectoryPath);
+			FindBlueprintsUsingVariable(VarSearchName, VarSearchKind, SearchPaths);
+		}
 		else if (!FindPropertyName.IsEmpty())
 		{
 			TArray<FString> SearchPaths;
@@ -337,34 +400,18 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportBlueprintToJson(const 
 
 	if (bAnalyze)
 	{
+		const FBlueprintAnalysis A = ComputeAnalysis(ExportData);
+
 		TSharedPtr<FJsonObject> Analysis = MakeShareable(new FJsonObject);
-
-		int32 TotalNodes = 0;
-		int32 TotalConnections = 0;
-
-		for (const FBlueprintFunctionData& Func : ExportData.Functions)
-		{
-			TotalNodes += Func.Nodes.Num();
-			TotalConnections += Func.Connections.Num();
-		}
-
-		for (const FBlueprintEventData& Event : ExportData.EventGraph)
-		{
-			TotalNodes += Event.Nodes.Num();
-			TotalConnections += Event.Connections.Num();
-		}
-
-		Analysis->SetNumberField(TEXT("total_functions"), ExportData.Functions.Num());
-		Analysis->SetNumberField(TEXT("total_variables"), ExportData.Variables.Num());
-		Analysis->SetNumberField(TEXT("total_events"), ExportData.EventGraph.Num());
-		Analysis->SetNumberField(TEXT("total_nodes"), TotalNodes);
-		Analysis->SetNumberField(TEXT("total_connections"), TotalConnections);
-		Analysis->SetNumberField(TEXT("total_components"), ExportData.Components.Num());
-		Analysis->SetNumberField(TEXT("total_references"), ExportData.References.Num());
-
-		float Complexity = TotalNodes * 1.0f + TotalConnections * 0.5f +
-			ExportData.Functions.Num() * 2.0f + ExportData.Variables.Num() * 0.5f;
-		Analysis->SetNumberField(TEXT("complexity_score"), Complexity);
+		Analysis->SetNumberField(TEXT("total_functions"), A.TotalFunctions);
+		Analysis->SetNumberField(TEXT("total_macros"), A.TotalMacros);
+		Analysis->SetNumberField(TEXT("total_variables"), A.TotalVariables);
+		Analysis->SetNumberField(TEXT("total_events"), A.TotalEvents);
+		Analysis->SetNumberField(TEXT("total_nodes"), A.TotalNodes);
+		Analysis->SetNumberField(TEXT("total_connections"), A.TotalConnections);
+		Analysis->SetNumberField(TEXT("total_components"), A.TotalComponents);
+		Analysis->SetNumberField(TEXT("total_references"), A.TotalReferences);
+		Analysis->SetNumberField(TEXT("complexity_score"), A.ComplexityScore);
 
 		JsonObject->SetObjectField(TEXT("analysis"), Analysis);
 	}
@@ -372,7 +419,7 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportBlueprintToJson(const 
 	return JsonObject;
 }
 
-FString UBlueprintExportCommandlet::ExportBlueprintToText(const FString& BlueprintPath, EBlueprintExportMode Mode)
+FString UBlueprintExportCommandlet::ExportBlueprintToText(const FString& BlueprintPath, EBlueprintExportMode Mode, bool bAnalyze)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	FBlueprintExportData ExportData = Reader->ExportBlueprint(BlueprintPath);
@@ -382,11 +429,28 @@ FString UBlueprintExportCommandlet::ExportBlueprintToText(const FString& Bluepri
 		return FString::Printf(TEXT("Error: Failed to load blueprint: %s"), *BlueprintPath);
 	}
 
+	// When --analyze is set, prepend a comment-style analysis header so callers
+	// can pull complexity_score without a second JSON round-trip.
+	FString AnalysisHeader;
+	if (bAnalyze)
+	{
+		const FBlueprintAnalysis A = ComputeAnalysis(ExportData);
+		// Skeleton uses // comments; compact uses # comments. Both render cleanly as prefix.
+		const TCHAR* Prefix = (Mode == EBlueprintExportMode::Skeleton) ? TEXT("// ") : TEXT("# ");
+		AnalysisHeader += FString::Printf(TEXT("%sAnalysis\n"), Prefix);
+		AnalysisHeader += FString::Printf(TEXT("%s  Complexity: %.1f\n"), Prefix, A.ComplexityScore);
+		AnalysisHeader += FString::Printf(TEXT("%s  Functions: %d  Macros: %d  Events: %d  Variables: %d\n"),
+			Prefix, A.TotalFunctions, A.TotalMacros, A.TotalEvents, A.TotalVariables);
+		AnalysisHeader += FString::Printf(TEXT("%s  Nodes: %d  Connections: %d  Components: %d  References: %d\n"),
+			Prefix, A.TotalNodes, A.TotalConnections, A.TotalComponents, A.TotalReferences);
+		AnalysisHeader += TEXT("\n");
+	}
+
 	if (Mode == EBlueprintExportMode::Skeleton)
 	{
-		return BlueprintToSkeleton(ExportData);
+		return AnalysisHeader + BlueprintToSkeleton(ExportData);
 	}
-	return BlueprintToCompact(ExportData);
+	return AnalysisHeader + BlueprintToCompact(ExportData);
 }
 
 void UBlueprintExportCommandlet::ExportBlueprint(const FString& BlueprintPath, bool bAnalyze)
@@ -394,11 +458,11 @@ void UBlueprintExportCommandlet::ExportBlueprint(const FString& BlueprintPath, b
 	switch (OutputMode)
 	{
 	case EBlueprintExportMode::Compact:
-		OutputText(ExportBlueprintToText(BlueprintPath, EBlueprintExportMode::Compact));
+		OutputText(ExportBlueprintToText(BlueprintPath, EBlueprintExportMode::Compact, bAnalyze));
 		break;
 
 	case EBlueprintExportMode::Skeleton:
-		OutputText(ExportBlueprintToText(BlueprintPath, EBlueprintExportMode::Skeleton));
+		OutputText(ExportBlueprintToText(BlueprintPath, EBlueprintExportMode::Skeleton, bAnalyze));
 		break;
 
 	case EBlueprintExportMode::Json:
@@ -545,6 +609,41 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindCallersToJson(const FStr
 void UBlueprintExportCommandlet::FindBlueprintsCallingFunction(const FString& FunctionName, const FString& ClassName, const TArray<FString>& SearchPaths)
 {
 	OutputJson(FindCallersToJson(FunctionName, ClassName, SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindVarUsesToJson(const FString& VariableName, const FString& Kind, const TArray<FString>& SearchPaths)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	TArray<FBlueprintVariableUsage> Results = Reader->FindBlueprintsUsingVariable(VariableName, Kind, SearchPaths);
+
+	TArray<TSharedPtr<FJsonValue>> ResultArray;
+	for (const FBlueprintVariableUsage& Item : Results)
+	{
+		TSharedPtr<FJsonObject> ItemJson = MakeShareable(new FJsonObject);
+		ItemJson->SetStringField(TEXT("variable_name"), Item.VariableName);
+		ItemJson->SetStringField(TEXT("variable_class"), Item.VariableClass);
+		ItemJson->SetStringField(TEXT("blueprint_path"), Item.BlueprintPath);
+		ItemJson->SetStringField(TEXT("node_guid"), Item.NodeGuid);
+		ItemJson->SetStringField(TEXT("graph_name"), Item.GraphName);
+		ItemJson->SetStringField(TEXT("access_kind"), Item.AccessKind);
+		ResultArray.Add(MakeShareable(new FJsonValueObject(ItemJson)));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("variable_name"), VariableName);
+	if (!Kind.IsEmpty())
+	{
+		Result->SetStringField(TEXT("kind_filter"), Kind);
+	}
+	Result->SetNumberField(TEXT("count"), ResultArray.Num());
+	Result->SetArrayField(TEXT("uses"), ResultArray);
+	return Result;
+}
+
+void UBlueprintExportCommandlet::FindBlueprintsUsingVariable(const FString& VariableName, const FString& Kind, const TArray<FString>& SearchPaths)
+{
+	OutputJson(FindVarUsesToJson(VariableName, Kind, SearchPaths));
 }
 
 TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindNativeEventsToJson(const TArray<FString>& SearchPaths)
@@ -945,6 +1044,47 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 		}
 		Json->SetArrayField(TEXT("functions"), Functions);
 
+		// Macros — same shape as functions (inputs/outputs come from tunnel pins,
+		// body is nodes + connections). Emitted as a first-class top-level key so
+		// callers don't have to hunt for macro bodies through call-site references.
+		TArray<TSharedPtr<FJsonValue>> Macros;
+		for (const FBlueprintFunctionData& Macro : Data.Macros)
+		{
+			TSharedPtr<FJsonObject> MacroObj = MakeShareable(new FJsonObject);
+			MacroObj->SetStringField(TEXT("name"), Macro.FunctionName);
+
+			TArray<TSharedPtr<FJsonValue>> Inputs;
+			for (const FBlueprintPinData& Pin : Macro.Inputs)
+			{
+				Inputs.Add(MakeShareable(new FJsonValueObject(PinToJson(Pin))));
+			}
+			MacroObj->SetArrayField(TEXT("inputs"), Inputs);
+
+			TArray<TSharedPtr<FJsonValue>> Outputs;
+			for (const FBlueprintPinData& Pin : Macro.Outputs)
+			{
+				Outputs.Add(MakeShareable(new FJsonValueObject(PinToJson(Pin))));
+			}
+			MacroObj->SetArrayField(TEXT("outputs"), Outputs);
+
+			TArray<TSharedPtr<FJsonValue>> Nodes;
+			for (const FBlueprintNodeData& Node : Macro.Nodes)
+			{
+				Nodes.Add(MakeShareable(new FJsonValueObject(NodeToJson(Node))));
+			}
+			MacroObj->SetArrayField(TEXT("nodes"), Nodes);
+
+			TArray<TSharedPtr<FJsonValue>> Connections;
+			for (const FBlueprintConnectionData& Conn : Macro.Connections)
+			{
+				Connections.Add(MakeShareable(new FJsonValueObject(ConnectionToJson(Conn))));
+			}
+			MacroObj->SetArrayField(TEXT("connections"), Connections);
+
+			Macros.Add(MakeShareable(new FJsonValueObject(MacroObj)));
+		}
+		Json->SetArrayField(TEXT("macros"), Macros);
+
 		// Full event data with nodes and connections
 		TArray<TSharedPtr<FJsonValue>> Events;
 		for (const FBlueprintEventData& Event : Data.EventGraph)
@@ -990,6 +1130,7 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 	{
 		// Just counts for compact summary
 		Json->SetNumberField(TEXT("function_count"), Data.Functions.Num());
+		Json->SetNumberField(TEXT("macro_count"), Data.Macros.Num());
 		Json->SetNumberField(TEXT("event_count"), Data.EventGraph.Num());
 		Json->SetNumberField(TEXT("component_count"), Data.Components.Num());
 	}
@@ -1354,6 +1495,42 @@ FString UBlueprintExportCommandlet::BlueprintToCompact(const FBlueprintExportDat
 		}
 	}
 
+	// Macros (same shape as functions — inputs/outputs from tunnel pins, body is
+	// nodes + connections. FunctionToCompact renders them identically.)
+	if (Data.Macros.Num() > 0)
+	{
+		Result += TEXT("## Macros\n");
+		for (const FBlueprintFunctionData& Macro : Data.Macros)
+		{
+			Result += TEXT("Macro ") + Macro.FunctionName;
+			if (Macro.Inputs.Num() > 0)
+			{
+				TArray<FString> InputStrs;
+				for (const FBlueprintPinData& Pin : Macro.Inputs)
+				{
+					InputStrs.Add(FString::Printf(TEXT("%s: %s"), *Pin.PinName, *Pin.PinType));
+				}
+				Result += TEXT("(") + FString::Join(InputStrs, TEXT(", ")) + TEXT(")");
+			}
+			else
+			{
+				Result += TEXT("()");
+			}
+			if (Macro.Outputs.Num() > 0)
+			{
+				TArray<FString> OutputStrs;
+				for (const FBlueprintPinData& Pin : Macro.Outputs)
+				{
+					OutputStrs.Add(FString::Printf(TEXT("%s: %s"), *Pin.PinName, *Pin.PinType));
+				}
+				Result += TEXT(" -> (") + FString::Join(OutputStrs, TEXT(", ")) + TEXT(")");
+			}
+			Result += TEXT("\n");
+			Result += NodesToCompact(Macro.Nodes, Macro.Connections);
+			Result += TEXT("\n");
+		}
+	}
+
 	// Events
 	if (Data.EventGraph.Num() > 0)
 	{
@@ -1602,6 +1779,51 @@ FString UBlueprintExportCommandlet::BlueprintToSkeleton(const FBlueprintExportDa
 	for (const FBlueprintFunctionData& Func : Data.Functions)
 	{
 		Result += FunctionToSkeleton(Func, ClassName);
+		Result += TEXT("\n");
+	}
+
+	// Macros: inlined at compile time in UE4, so no direct C++ equivalent. Emit
+	// each macro as a comment block showing its signature + body node list so the
+	// migrator can decide whether to inline, extract to a helper, or drop it.
+	if (Data.Macros.Num() > 0)
+	{
+		Result += TEXT("// --- Macros (BP-only, inlined at compile time) ---\n");
+		for (const FBlueprintFunctionData& Macro : Data.Macros)
+		{
+			Result += FString::Printf(TEXT("// Macro %s("), *Macro.FunctionName);
+			TArray<FString> InputStrs;
+			for (const FBlueprintPinData& Pin : Macro.Inputs)
+			{
+				InputStrs.Add(FString::Printf(TEXT("%s %s"), *BPTypeToCppType(Pin.PinType), *Pin.PinName));
+			}
+			Result += FString::Join(InputStrs, TEXT(", "));
+			Result += TEXT(")");
+			if (Macro.Outputs.Num() > 0)
+			{
+				Result += TEXT(" -> (");
+				TArray<FString> OutputStrs;
+				for (const FBlueprintPinData& Pin : Macro.Outputs)
+				{
+					OutputStrs.Add(FString::Printf(TEXT("%s %s"), *BPTypeToCppType(Pin.PinType), *Pin.PinName));
+				}
+				Result += FString::Join(OutputStrs, TEXT(", "));
+				Result += TEXT(")");
+			}
+			Result += TEXT("\n");
+
+			for (const FBlueprintNodeData& Node : Macro.Nodes)
+			{
+				if (ShouldSkipNode(Node)) continue;
+				if (Node.NodeType.Contains(TEXT("Tunnel"))) continue;
+				Result += TEXT("//   ") + Node.NodeTitle;
+				if (!Node.FunctionName.IsEmpty() && Node.bIsNativeFunction)
+				{
+					Result += TEXT(" -> ") + Node.FunctionClass + TEXT("::") + Node.FunctionName + TEXT("()");
+				}
+				Result += TEXT("\n");
+			}
+			Result += TEXT("//\n");
+		}
 		Result += TEXT("\n");
 	}
 

@@ -49,6 +49,10 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/UI/
 # Find Blueprints calling a function
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetPlayerController -class=UGameplayStatics
 
+# Find Blueprints reading/writing a variable (K2Node_VariableGet/Set sites)
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -var=ShopPopup
+UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -var=ShopPopup -varkind=set
+
 # Find native event implementations
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -nativeevents
 
@@ -125,6 +129,10 @@ digbp refview --path=/Game/Blueprints/MyBP --bponly
 # Find function callers
 digbp findcallers --dir=/Game/ --func=GetPlayerController --class=UGameplayStatics
 
+# Find variable get/set sites
+digbp findvaruses --dir=/Game/ --var=ShopPopup
+digbp findvaruses --dir=/Game/ --var=ShopPopup --kind=set
+
 # Find native event implementations
 digbp nativeevents --dir=/Game/
 
@@ -167,7 +175,8 @@ Complete graph representation:
 - All pins with types, defaults, connections
 - Full connection maps
 - Component hierarchy
-- Optional analysis metrics with `-analyze`
+- Locally-defined macros under top-level `macros` (same shape as functions: inputs/outputs/nodes/connections; inputs come from tunnel entry node output pins, outputs from tunnel exit node input pins)
+- Optional analysis metrics with `-analyze` (also available in compact/skeleton modes as a comment header)
 
 ### Skeleton Output
 
@@ -192,6 +201,8 @@ C++ migration stubs:
 | Reference Viewer (BP only) | `-path=... -refview -bponly` | Only include Blueprints |
 | Find Callers | `-dir=... -func=Name` | Find function callers |
 | Find Callers (filtered) | `-dir=... -func=Name -class=Class` | Find with class filter |
+| Find Var Uses | `-dir=... -var=Name` | Find K2Node_VariableGet/Set sites |
+| Find Var Uses (filtered) | `-dir=... -var=Name -varkind=get\|set` | Restrict to get or set only |
 | Native Events | `-dir=... -nativeevents` | Find native event implementations |
 | Implementable Events | `-dir=... -event=Name` | Find implementable event implementations |
 | Property Search | `-dir=... -findprop=Name` | Find Blueprints with CDO property |

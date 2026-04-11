@@ -54,6 +54,7 @@ func main() {
 		graphCmd(),
 		refviewCmd(),
 		findcallersCmd(),
+		findvarusesCmd(),
 		nativeeventsCmd(),
 		findeventsCmd(),
 		findpropCmd(),
@@ -289,6 +290,37 @@ func findcallersCmd() *cobra.Command {
 	cmd.Flags().StringVar(&className, "class", "", "Filter by class name")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("func")
+	return cmd
+}
+
+func findvarusesCmd() *cobra.Command {
+	var (
+		dir  string
+		varName string
+		kind string
+	)
+	cmd := &cobra.Command{
+		Use:   "findvaruses",
+		Short: "Find Blueprints reading or writing a named variable",
+		Long: `Scans K2Node_VariableGet/Set sites across FunctionGraphs, UbergraphPages,
+and MacroGraphs for the given variable name. Use --kind=get|set to filter
+to only one access direction (default: any).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"dir": dir,
+				"var": varName,
+			}
+			if kind != "" {
+				params["kind"] = kind
+			}
+			return callServer("findvaruses", params)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required)")
+	cmd.Flags().StringVar(&varName, "var", "", "Variable name to find (required)")
+	cmd.Flags().StringVar(&kind, "kind", "", "Access kind filter: get, set, any (default: any)")
+	_ = cmd.MarkFlagRequired("dir")
+	_ = cmd.MarkFlagRequired("var")
 	return cmd
 }
 

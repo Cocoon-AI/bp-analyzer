@@ -334,7 +334,7 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 				? EBlueprintExportMode::Skeleton
 				: EBlueprintExportMode::Compact;
 
-			FString Text = Commandlet->ExportBlueprintToText(Path, ExportMode);
+			FString Text = Commandlet->ExportBlueprintToText(Path, ExportMode, bAnalyze);
 
 			TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
 			Result->SetBoolField(TEXT("success"), !Text.StartsWith(TEXT("Error:")));
@@ -447,6 +447,30 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		SearchPaths.Add(Dir);
 
 		TSharedPtr<FJsonObject> Result = Commandlet->FindCallersToJson(Func, ClassName, SearchPaths);
+		return MakeResponse(Id, Result);
+	}
+
+	if (Method == TEXT("findvaruses"))
+	{
+		FString Dir;
+		if (!Params->TryGetStringField(TEXT("dir"), Dir) || Dir.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dir"));
+		}
+
+		FString Var;
+		if (!Params->TryGetStringField(TEXT("var"), Var) || Var.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: var"));
+		}
+
+		FString Kind;
+		Params->TryGetStringField(TEXT("kind"), Kind);
+
+		TArray<FString> SearchPaths;
+		SearchPaths.Add(Dir);
+
+		TSharedPtr<FJsonObject> Result = Commandlet->FindVarUsesToJson(Var, Kind, SearchPaths);
 		return MakeResponse(Id, Result);
 	}
 
