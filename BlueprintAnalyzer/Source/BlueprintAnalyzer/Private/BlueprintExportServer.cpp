@@ -3,6 +3,7 @@
 
 #include "BlueprintExportServer.h"
 #include "BlueprintExportCommandlet.h"
+#include "BlueprintEditOps.h"
 #include "UObject/UObjectGlobals.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -281,6 +282,20 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 	}
 
 	// --- Dispatch by method name ---
+
+	// Forward any "edit.*" method to the edit-ops dispatch table. Keeps the main
+	// if-ladder scoped to read operations.
+	if (Method.StartsWith(TEXT("edit.")))
+	{
+		TSharedPtr<FJsonObject> EditResult = DispatchEditRequest(Method, Params);
+		if (!EditResult.IsValid())
+		{
+			EditResult = MakeShareable(new FJsonObject);
+			EditResult->SetBoolField(TEXT("success"), false);
+			EditResult->SetStringField(TEXT("error"), TEXT("DispatchEditRequest returned null"));
+		}
+		return MakeResponse(Id, EditResult);
+	}
 
 	if (Method == TEXT("ping"))
 	{

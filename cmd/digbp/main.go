@@ -57,6 +57,7 @@ func main() {
 		nativeeventsCmd(),
 		findeventsCmd(),
 		findpropCmd(),
+		editCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

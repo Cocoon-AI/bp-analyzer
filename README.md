@@ -68,7 +68,7 @@ UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/Blueprints
 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -dir=/Game/ -func=GetPlayerController
 ```
 
-**Git Bash/MSYS2**: Prefix with `MSYS_NO_PATHCONV=1` to prevent path mangling.
+**Git Bash/MSYS2**: Asset paths like `/Game/...` get mangled to local filesystem paths under MSYS, which makes both the commandlet and `digbp` return empty results. **Recommended:** set `MSYS_NO_PATHCONV=1` as a **Windows user environment variable** (Win+R → `sysdm.cpl` → Advanced → Environment Variables → User variables → New) so every shell inherits it. As a fallback, prefix individual commands inline: `MSYS_NO_PATHCONV=1 digbp export --path=/Game/...`. See [Troubleshooting → Path Mangling](#path-mangling-git-bash) for details.
 
 ## digbp CLI Reference
 
@@ -326,11 +326,26 @@ bp-analyzer/
 
 ### Path Mangling (Git Bash)
 
+Git Bash / MSYS2 on Windows rewrites arguments that look like Unix paths into local filesystem paths. For example, `--path=/Game/Foo` becomes `--path=C:/Program Files/Git/Game/Foo`, which causes both the commandlet and `digbp` to return empty results or "blueprint not found" errors.
+
+**Recommended fix — set it permanently:**
+
+1. Win+R → `sysdm.cpl` → Advanced tab → Environment Variables
+2. Under **User variables**, click New
+3. Variable name: `MSYS_NO_PATHCONV`
+4. Variable value: `1`
+5. Restart Claude Code (and any other shells) so the new value is inherited
+
+Quick check: `echo $MSYS_NO_PATHCONV` should print `1`.
+
+**Inline fallback** if the env var is missing:
+
 ```bash
-MSYS_NO_PATHCONV=1 UE4Editor-Cmd.exe ... -path=/Game/...
+MSYS_NO_PATHCONV=1 digbp export --path=/Game/Blueprints/MyBP
+MSYS_NO_PATHCONV=1 UE4Editor-Cmd.exe "Project.uproject" -run=BlueprintExport -path=/Game/...
 ```
 
-This is not needed with `digbp` — only the direct commandlet invocation.
+**Note:** `MSYS2_ARG_CONV_EXCL=/Game/;/Script/;/Engine/` does **not** work for `digbp`'s `--path=/Game/...` style arguments — the exclusion list matches the start of the entire argument (`--path=`), not the embedded path. Use `MSYS_NO_PATHCONV=1` instead.
 
 ### Blueprint Not Found
 
