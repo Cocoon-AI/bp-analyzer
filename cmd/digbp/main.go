@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cocoonai/bp-analyzer/internal/config"
 	"github.com/cocoonai/bp-analyzer/internal/rpc"
@@ -59,6 +60,7 @@ func main() {
 		findeventsCmd(),
 		findpropCmd(),
 		editCmd(),
+		versionCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -117,6 +119,85 @@ func stopCmd() *cobra.Command {
 			}
 			fmt.Println("Server stopped")
 			return nil
+		},
+	}
+}
+
+// versionCmd reports build timestamps for both the local digbp binary and the
+// running server (if one exists), so PATH-staleness problems are one command
+// away from diagnosable. Motivated by the Cluster 1b.5 incident where steamdev's
+// `C:/tools/digbp.exe` was silently behind the `E:/cai/bp-analyzer/` build and
+// `findvaruses` reported as "unknown command" until manually resynced.
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Report digbp CLI and server build timestamps",
+		Long: `Prints:
+  - the mtime of the digbp.exe binary currently being run (CLI build)
+  - the __DATE__/__TIME__ the plugin was compiled (server build), if the
+    server is running and responds to the build_info RPC
+  - a MATCH/MISMATCH line helping diagnose PATH staleness
+
+Does not start the server; if the server is not running, only CLI info is
+printed and the server section reports "not running".`,
+		Run: func(cmd *cobra.Command, args []string) {
+			// --- CLI side: mtime of the running binary ---
+			cliBuildTime := "(unknown)"
+			exe, err := os.Executable()
+			if err == nil {
+				if info, err := os.Stat(exe); err == nil {
+					cliBuildTime = info.ModTime().UTC().Format(time.RFC3339)
+				}
+			}
+			fmt.Println("digbp CLI")
+			fmt.Printf("  binary:     %s\n", exe)
+			fmt.Printf("  build time: %s\n", cliBuildTime)
+
+			// --- Server side: probe build_info over the pipe ---
+			fmt.Println()
+			fmt.Println("BlueprintAnalyzer server")
+			if !server.IsRunning(cfg.PipeName) {
+				fmt.Println("  status:     not running (start the server and re-run `digbp version` to compare)")
+				return
+			}
+			result, err := rpc.Call(cfg.PipeName, "build_info", nil)
+			if err != nil {
+				// Likely an older server that predates build_info — that itself is
+				// a diagnosable staleness signal.
+				fmt.Printf("  status:     running, but build_info RPC failed: %v\n", err)
+				fmt.Println("  note:       server plugin predates the build_info method; rebuild the plugin to compare")
+				return
+			}
+			var info struct {
+				Success    bool   `json:"success"`
+				BuildDate  string `json:"build_date"`
+				BuildTime  string `json:"build_time"`
+				ModuleName string `json:"module_name"`
+			}
+			if err := json.Unmarshal(result, &info); err != nil {
+				fmt.Printf("  status:     running, but build_info response malformed: %v\n", err)
+				return
+			}
+			serverStamp := fmt.Sprintf("%s %s", info.BuildDate, info.BuildTime)
+			fmt.Printf("  module:     %s\n", info.ModuleName)
+			fmt.Printf("  build time: %s (compiled in)\n", serverStamp)
+
+			// --- Comparison ---
+			// We can't compare wall-clock directly because the CLI is mtime
+			// and the server is __DATE__/__TIME__ at compile. But we can at
+			// least flag "CLI is older than any date on the server build" as
+			// a strong likely-stale signal.
+			fmt.Println()
+			if t, err := time.Parse(time.RFC3339, cliBuildTime); err == nil {
+				serverT, err := time.Parse("Jan _2 2006 15:04:05", serverStamp)
+				if err == nil && serverT.After(t.Add(5*time.Minute)) {
+					fmt.Println("HINT: server build is newer than CLI binary by more than 5 min.")
+					fmt.Println("      Your `digbp` may be stale — check that the binary on your PATH matches")
+					fmt.Println("      the latest `go build -o digbp.exe ./cmd/digbp/` output.")
+					return
+				}
+			}
+			fmt.Println("(no staleness hint — CLI appears current relative to server)")
 		},
 	}
 }

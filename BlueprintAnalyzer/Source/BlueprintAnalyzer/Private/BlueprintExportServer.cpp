@@ -313,6 +313,20 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Result);
 	}
 
+	if (Method == TEXT("build_info"))
+	{
+		// __DATE__ and __TIME__ are baked in at TU compile time, so this reports
+		// when the BlueprintExportServer.cpp translation unit was last compiled.
+		// Close enough to "when was the plugin rebuilt" for diagnosing client-
+		// side staleness. See versionCmd in cmd/digbp/main.go for the consumer.
+		TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetStringField(TEXT("build_date"), UTF8_TO_TCHAR(__DATE__));
+		Result->SetStringField(TEXT("build_time"), UTF8_TO_TCHAR(__TIME__));
+		Result->SetStringField(TEXT("module_name"), TEXT("BlueprintAnalyzer"));
+		return MakeResponse(Id, Result);
+	}
+
 	if (Method == TEXT("export"))
 	{
 		FString Path;

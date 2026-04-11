@@ -98,6 +98,7 @@ Build: `cd bp-analyzer && go build -o digbp.exe ./cmd/digbp/`
 digbp start                     # Launch UE4 server (auto-starts on first command too)
 digbp status                    # Check if server is running
 digbp stop                      # Shutdown server
+digbp version                   # Report CLI and server build timestamps (detects PATH staleness)
 ```
 
 ### digbp Commands
