@@ -33,6 +33,23 @@ struct BLUEPRINTANALYZER_API FBlueprintPinData
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	bool bIsConst = false;
 
+	// Comma-separated list of `{NodeGuid}.{PinName}` sources/targets, one per
+	// entry in UE4's Pin->LinkedTo array. Usually a single entry, but a few
+	// UE4 BP constructs legitimately produce multi-entry LinkedTo on a single
+	// pin — callers should tolerate both shapes:
+	//
+	//   - K2Node_MacroInstance exec pins (`execute` / `then`): fan-in is legal
+	//     because macros are inlined at compile time, so multiple upstream
+	//     events may share one macro-instance exec pin. Treat as real.
+	//
+	//   - `self` / target pins on CallFunction/VariableGet/VariableSet nodes:
+	//     normally single-source, but reroute node chains can surface as
+	//     multi-entry in some export paths. Present tool does not attempt to
+	//     collapse reroute passthroughs — each LinkedTo entry is emitted as-is.
+	//
+	// For data-pin migration to C++, prefer picking the non-reroute terminal
+	// source (walk `K2Node_Knot` chains to their ultimate producer) rather
+	// than blindly consuming the first entry.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	FString LinkedTo;
 };

@@ -152,11 +152,26 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::Save(const TSharedPtr<FJsonObject>& P
 	TArray<UPackage*> PackagesToSave;
 	PackagesToSave.Add(Package);
 
-	// bOnlyDirty=false so we save even if nothing dirtied the package through editor UI.
-	// bCheckDirty=false, bPromptToSave=false — headless save.
-	const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty*/false);
-
+	// bOnlyDirty=true: only write to disk if the package is actually dirty.
+	// Previously this was false ("save even if nothing dirtied the package through
+	// editor UI") but that made `edit.save_and_compile` unusable as a verify-still-
+	// compiles sanity check — it was writing the .uasset on every call regardless
+	// of whether anything changed, causing spurious p4 diffs on clean blueprints.
+	// All edit ops in this plugin dutifully call MarkBlueprintAs{Modified,
+	// StructurallyModified} or MarkPackageDirty after mutating, so legitimate
+	// edit workflows still get saved — the dirty flag is accurate.
+	// Report saved=false + not_dirty=true as a distinct no-op success, so callers
+	// who explicitly wanted to write a clean package can detect it.
+	const bool bWasDirty = Package->IsDirty();
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	if (!bWasDirty)
+	{
+		Response->SetBoolField(TEXT("saved"), false);
+		Response->SetBoolField(TEXT("not_dirty"), true);
+		return Response;
+	}
+
+	const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty*/true);
 	Response->SetBoolField(TEXT("saved"), bSaved);
 	if (!bSaved)
 	{
