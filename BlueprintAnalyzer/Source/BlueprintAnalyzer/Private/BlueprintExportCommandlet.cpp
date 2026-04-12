@@ -710,6 +710,32 @@ void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& Prope
 	OutputJson(FindPropertyToJson(PropertyName, PropertyValue, ParentClassName, SearchPaths));
 }
 
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::SearchInBlueprintsToJson(const FString& Query, const TArray<FString>& SearchPaths)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	TArray<FBlueprintSearchResult> Results = Reader->SearchInBlueprints(Query, SearchPaths);
+
+	TArray<TSharedPtr<FJsonValue>> ResultArray;
+	for (const FBlueprintSearchResult& Item : Results)
+	{
+		TSharedPtr<FJsonObject> ItemJson = MakeShareable(new FJsonObject);
+		ItemJson->SetStringField(TEXT("blueprint_path"), Item.BlueprintPath);
+		if (!Item.GraphName.IsEmpty()) { ItemJson->SetStringField(TEXT("graph_name"), Item.GraphName); }
+		if (!Item.NodeGuid.IsEmpty())  { ItemJson->SetStringField(TEXT("node_guid"), Item.NodeGuid); }
+		if (!Item.NodeClass.IsEmpty()) { ItemJson->SetStringField(TEXT("node_class"), Item.NodeClass); }
+		ItemJson->SetStringField(TEXT("match_field"), Item.MatchField);
+		ItemJson->SetStringField(TEXT("match_value"), Item.MatchValue);
+		ResultArray.Add(MakeShareable(new FJsonValueObject(ItemJson)));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("query"), Query);
+	Result->SetNumberField(TEXT("count"), ResultArray.Num());
+	Result->SetArrayField(TEXT("results"), ResultArray);
+	return Result;
+}
+
 TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindImplementableEventsToJson(const FString& EventName, const TArray<FString>& SearchPaths)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
@@ -990,6 +1016,10 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 		VarObj->SetStringField(TEXT("default_value"), Var.DefaultValue);
 		VarObj->SetBoolField(TEXT("is_public"), Var.bIsPublic);
 		VarObj->SetBoolField(TEXT("is_replicated"), Var.bIsReplicated);
+		if (Var.bIsTypeBroken)
+		{
+			VarObj->SetBoolField(TEXT("is_type_broken"), true);
+		}
 		Variables.Add(MakeShareable(new FJsonValueObject(VarObj)));
 	}
 	Json->SetArrayField(TEXT("variables"), Variables);
@@ -1473,6 +1503,7 @@ FString UBlueprintExportCommandlet::BlueprintToCompact(const FBlueprintExportDat
 		{
 			Result += TEXT("  ") + Var.VariableName + TEXT(": ") + Var.VariableType;
 			TArray<FString> Flags;
+			if (Var.bIsTypeBroken) Flags.Add(TEXT("BROKEN TYPE"));
 			if (Var.bIsPublic) Flags.Add(TEXT("public"));
 			if (Var.bIsReplicated) Flags.Add(TEXT("replicated"));
 			if (Flags.Num() > 0)
@@ -1740,6 +1771,11 @@ FString UBlueprintExportCommandlet::BlueprintToSkeleton(const FBlueprintExportDa
 	// Variables
 	for (const FBlueprintVariableData& Var : Data.Variables)
 	{
+		if (Var.bIsTypeBroken)
+		{
+			Result += FString::Printf(TEXT("\t// BROKEN TYPE — variable '%s' references a deleted type (%s)\n\n"), *Var.VariableName, *Var.VariableType);
+			continue;
+		}
 		FString CppType = BPTypeToCppType(Var.VariableType);
 
 		Result += TEXT("\tUPROPERTY(");

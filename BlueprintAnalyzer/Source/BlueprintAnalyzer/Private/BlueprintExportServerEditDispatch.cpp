@@ -27,6 +27,7 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 
 	// --- Phase B: variables + CDO ---
 
+	if (Method == TEXT("edit.variable.list"))         { return FBlueprintEditOps::VariableList(Params); }
 	if (Method == TEXT("edit.variable.add"))          { return FBlueprintEditOps::VariableAdd(Params); }
 	if (Method == TEXT("edit.variable.remove"))       { return FBlueprintEditOps::VariableRemove(Params); }
 	if (Method == TEXT("edit.variable.rename"))       { return FBlueprintEditOps::VariableRename(Params); }
@@ -36,6 +37,7 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 	if (Method == TEXT("edit.variable.set_metadata")) { return FBlueprintEditOps::VariableSetMetadata(Params); }
 	if (Method == TEXT("edit.cdo.set_property"))      { return FBlueprintEditOps::CdoSetProperty(Params); }
 	if (Method == TEXT("edit.cdo.get_property"))      { return FBlueprintEditOps::CdoGetProperty(Params); }
+	if (Method == TEXT("edit.purge_phantom"))         { return FBlueprintEditOps::PurgePhantom(Params); }
 
 	// --- Phase C: functions / events / components ---
 
@@ -59,6 +61,7 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 
 	// Generic ops (BlueprintEditOps_Nodes.cpp)
 	if (Method == TEXT("edit.node.remove"))         { return FBlueprintEditOps::NodeRemove(Params); }
+	if (Method == TEXT("edit.node.remove_broken")) { return FBlueprintEditOps::NodeRemoveBroken(Params); }
 	if (Method == TEXT("edit.node.move"))           { return FBlueprintEditOps::NodeMove(Params); }
 	if (Method == TEXT("edit.node.add_generic"))    { return FBlueprintEditOps::NodeAddGeneric(Params); }
 	if (Method == TEXT("edit.pin.set_default"))     { return FBlueprintEditOps::PinSetDefault(Params); }

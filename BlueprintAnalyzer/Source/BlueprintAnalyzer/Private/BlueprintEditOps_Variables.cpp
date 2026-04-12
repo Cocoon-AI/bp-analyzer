@@ -10,6 +10,7 @@
 #include "Engine/UserDefinedStruct.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
@@ -25,6 +26,42 @@
 namespace
 {
 	using FBlueprintEditHelpers::RequireString;
+
+	// Returns true when the pin type's sub-object reference is broken (deleted struct/class/enum).
+	// Named with EditOps_ prefix to avoid unity-build collisions with the reader's copy.
+	static bool EditOps_IsPinTypeBroken(const FEdGraphPinType& PinType)
+	{
+		static const TSet<FName> NeedsSubObject = {
+			UEdGraphSchema_K2::PC_Struct,
+			UEdGraphSchema_K2::PC_Object,
+			UEdGraphSchema_K2::PC_Class,
+			UEdGraphSchema_K2::PC_SoftObject,
+			UEdGraphSchema_K2::PC_SoftClass,
+			UEdGraphSchema_K2::PC_Interface,
+			UEdGraphSchema_K2::PC_Enum,
+		};
+		return NeedsSubObject.Contains(PinType.PinCategory) && !PinType.PinSubCategoryObject.IsValid();
+	}
+
+	// Convert FEdGraphPinType to a human-readable string (mirrors the reader's PinTypeToString).
+	static FString EditOps_PinTypeToString(const FEdGraphPinType& PinType)
+	{
+		FString Result = PinType.PinCategory.ToString();
+		if (PinType.PinSubCategory != NAME_None)
+		{
+			Result += TEXT(":") + PinType.PinSubCategory.ToString();
+		}
+		if (PinType.PinSubCategoryObject.IsValid())
+		{
+			Result += TEXT("<") + PinType.PinSubCategoryObject->GetName() + TEXT(">");
+		}
+		if (PinType.ContainerType == EPinContainerType::Array)      { Result = TEXT("TArray<") + Result + TEXT(">"); }
+		else if (PinType.ContainerType == EPinContainerType::Set)   { Result = TEXT("TSet<") + Result + TEXT(">"); }
+		else if (PinType.ContainerType == EPinContainerType::Map)   { Result = TEXT("TMap<") + Result + TEXT(">"); }
+		if (PinType.bIsReference) { Result += TEXT("&"); }
+		if (PinType.bIsConst)     { Result = TEXT("const ") + Result; }
+		return Result;
+	}
 
 	// Find a variable description by name. Returns -1 if not found.
 	static int32 FindVariableIndex(UBlueprint* Blueprint, const FName& VarName)
@@ -66,6 +103,50 @@ namespace
 		}
 		return false;
 	}
+}
+
+//------------------------------------------------------------------------------
+// edit.variable.list
+//------------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::VariableList(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+
+	bool bIncludeBroken = false;
+	Params->TryGetBoolField(TEXT("include_broken"), bIncludeBroken);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	TArray<TSharedPtr<FJsonValue>> VarArray;
+	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+	{
+		const bool bBroken = EditOps_IsPinTypeBroken(Var.VarType);
+		if (bBroken && !bIncludeBroken) { continue; }
+
+		TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject);
+		Obj->SetStringField(TEXT("name"), Var.VarName.ToString());
+		Obj->SetStringField(TEXT("type"), EditOps_PinTypeToString(Var.VarType));
+		Obj->SetStringField(TEXT("category"), Var.Category.ToString());
+		Obj->SetStringField(TEXT("default_value"), Var.DefaultValue);
+		Obj->SetBoolField(TEXT("is_public"), (Var.PropertyFlags & CPF_BlueprintVisible) != 0);
+		Obj->SetBoolField(TEXT("is_replicated"), (Var.PropertyFlags & CPF_Net) != 0);
+		if (bBroken)
+		{
+			Obj->SetBoolField(TEXT("is_type_broken"), true);
+			Obj->SetStringField(TEXT("pin_category"), Var.VarType.PinCategory.ToString());
+		}
+		VarArray.Add(MakeShareable(new FJsonValueObject(Obj)));
+	}
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetArrayField(TEXT("variables"), VarArray);
+	Response->SetNumberField(TEXT("count"), VarArray.Num());
+	return Response;
 }
 
 //------------------------------------------------------------------------------
@@ -164,20 +245,39 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableRemove(const TSharedPtr<FJson
 	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
 	if (!RequireString(Params, TEXT("name"), Name, Err)) { return Err; }
 
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
 	FString LoadError;
 	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
 	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
 
 	const FName VarName(*Name);
-	if (FindVariableIndex(Blueprint, VarName) == INDEX_NONE)
-	{
-		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("Variable '%s' not found"), *Name));
-	}
+	const int32 Idx = FindVariableIndex(Blueprint, VarName);
 
-	FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VarName);
+	if (Idx != INDEX_NONE)
+	{
+		if (bForce)
+		{
+			// Direct array removal — bypasses FBlueprintEditorUtils which may choke
+			// on variables whose type object has been deleted.
+			Blueprint->NewVariables.RemoveAt(Idx);
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		}
+		else
+		{
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VarName);
+		}
+	}
+	else
+	{
+		return FBlueprintEditHelpers::MakeEditError(
+			FString::Printf(TEXT("Variable '%s' not found (try --force for phantom variables)"), *Name));
+	}
 
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("name"), Name);
+	if (bForce) { Response->SetBoolField(TEXT("forced"), true); }
 	return Response;
 }
 
@@ -490,5 +590,84 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::CdoGetProperty(const TSharedPtr<FJson
 	Response->SetStringField(TEXT("property_name"), PropertyName);
 	Response->SetStringField(TEXT("value"), Exported);
 	Response->SetStringField(TEXT("property_type"), Prop->GetCPPType());
+	return Response;
+}
+
+//------------------------------------------------------------------------------
+// edit.purge_phantom
+//------------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::PurgePhantom(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path, PropName;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+	if (!RequireString(Params, TEXT("property"), PropName, Err)) { return Err; }
+
+	bool bDryRun = false;
+	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	const FName PropFName(*PropName);
+	TArray<TSharedPtr<FJsonValue>> Actions;
+	bool bNeedsRecompile = false;
+
+	// 1. Check NewVariables for the name.
+	{
+		const int32 Idx = FindVariableIndex(Blueprint, PropFName);
+		if (Idx != INDEX_NONE)
+		{
+			TSharedPtr<FJsonObject> Act = MakeShareable(new FJsonObject);
+			Act->SetStringField(TEXT("location"), TEXT("NewVariables"));
+			Act->SetNumberField(TEXT("index"), Idx);
+			Act->SetStringField(TEXT("type"), EditOps_PinTypeToString(Blueprint->NewVariables[Idx].VarType));
+			Act->SetBoolField(TEXT("is_type_broken"), EditOps_IsPinTypeBroken(Blueprint->NewVariables[Idx].VarType));
+			if (!bDryRun)
+			{
+				Blueprint->NewVariables.RemoveAt(Idx);
+				bNeedsRecompile = true;
+				Act->SetBoolField(TEXT("removed"), true);
+			}
+			Actions.Add(MakeShareable(new FJsonValueObject(Act)));
+		}
+	}
+
+	// 2. Check GeneratedClass for the stale FProperty.
+	if (Blueprint->GeneratedClass)
+	{
+		FProperty* Prop = Blueprint->GeneratedClass->FindPropertyByName(PropFName);
+		if (Prop)
+		{
+			TSharedPtr<FJsonObject> Act = MakeShareable(new FJsonObject);
+			Act->SetStringField(TEXT("location"), TEXT("GeneratedClass"));
+			Act->SetStringField(TEXT("property_type"), Prop->GetCPPType());
+			Act->SetStringField(TEXT("note"), TEXT("Stale compiled property — will be removed by full recompile"));
+			Actions.Add(MakeShareable(new FJsonValueObject(Act)));
+			bNeedsRecompile = true;
+		}
+	}
+
+	// 4. Force full recompile if anything was found and not dry-run.
+	if (bNeedsRecompile && !bDryRun)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	}
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetStringField(TEXT("property"), PropName);
+	Response->SetArrayField(TEXT("actions"), Actions);
+	Response->SetNumberField(TEXT("locations_found"), Actions.Num());
+	if (bDryRun) { Response->SetBoolField(TEXT("dry_run"), true); }
+	if (bNeedsRecompile && !bDryRun) { Response->SetBoolField(TEXT("recompiled"), true); }
+
+	if (Actions.Num() == 0)
+	{
+		Response->SetStringField(TEXT("note"), TEXT("Property not found in NewVariables, LocalVariables, or GeneratedClass"));
+	}
+
 	return Response;
 }

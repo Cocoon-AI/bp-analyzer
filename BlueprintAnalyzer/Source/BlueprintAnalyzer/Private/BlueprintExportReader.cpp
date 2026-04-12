@@ -40,6 +40,36 @@ static bool IsBlueprintImplementableEvent(const UFunction* Function)
 #include "UObject/UObjectIterator.h"
 #include "Misc/PackageName.h"
 
+// Returns true when the pin type references a sub-object (struct, object, class,
+// enum, etc.) but that object can no longer be resolved — typically because the
+// backing USTRUCT / UClass was deleted from C++.
+static bool IsPinTypeBroken(const FEdGraphPinType& PinType)
+{
+	// These categories require a valid PinSubCategoryObject to be meaningful.
+	static const TSet<FName> NeedsSubObject = {
+		UEdGraphSchema_K2::PC_Struct,
+		UEdGraphSchema_K2::PC_Object,
+		UEdGraphSchema_K2::PC_Class,
+		UEdGraphSchema_K2::PC_SoftObject,
+		UEdGraphSchema_K2::PC_SoftClass,
+		UEdGraphSchema_K2::PC_Interface,
+		UEdGraphSchema_K2::PC_Enum,
+	};
+	return NeedsSubObject.Contains(PinType.PinCategory) && !PinType.PinSubCategoryObject.IsValid();
+}
+
+// Returns true if any pin on the node has a broken type reference.
+// Used to guard against calling GetNodeTitle on broken struct nodes.
+static bool IsPinTypeBroken_AnyPin(const UEdGraphNode* Node)
+{
+	if (!Node) { return false; }
+	for (const UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && IsPinTypeBroken(Pin->PinType)) { return true; }
+	}
+	return false;
+}
+
 // Helper to convert FEdGraphPinType to string
 static FString PinTypeToString(const FEdGraphPinType& PinType)
 {
@@ -304,6 +334,7 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 		FBlueprintVariableData VarData;
 		VarData.VariableName = Var.VarName.ToString();
 		VarData.VariableType = PinTypeToString(Var.VarType);
+		VarData.bIsTypeBroken = IsPinTypeBroken(Var.VarType);
 		VarData.Category = Var.Category.ToString();
 		VarData.DefaultValue = Var.DefaultValue;
 		VarData.bIsPublic = (Var.PropertyFlags & CPF_BlueprintVisible) != 0;
@@ -721,6 +752,7 @@ TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::FindBlueprintsCalling
 			AllGraphs.Append(Blueprint->FunctionGraphs);
 			AllGraphs.Append(Blueprint->UbergraphPages);
 			AllGraphs.Append(Blueprint->MacroGraphs);
+			AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
 #endif
 
 			for (UEdGraph* Graph : AllGraphs)
@@ -799,6 +831,7 @@ TArray<FBlueprintVariableUsage> UBlueprintExportReader::FindBlueprintsUsingVaria
 			AllGraphs.Append(Blueprint->FunctionGraphs);
 			AllGraphs.Append(Blueprint->UbergraphPages);
 			AllGraphs.Append(Blueprint->MacroGraphs);
+			AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
 #endif
 
 			for (UEdGraph* Graph : AllGraphs)
@@ -1008,6 +1041,7 @@ TArray<FBlueprintCppFunctionUsage> UBlueprintExportReader::GetBlueprintCppFuncti
 	TArray<UEdGraph*> AllGraphs;
 	AllGraphs.Append(Blueprint->FunctionGraphs);
 	AllGraphs.Append(Blueprint->UbergraphPages);
+	AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
 
 	for (UEdGraph* Graph : AllGraphs)
 	{
@@ -1208,6 +1242,159 @@ TArray<FBlueprintPropertySearchResult> UBlueprintExportReader::FindBlueprintsWit
 			Result.PropertyType = Property->GetCPPType();
 
 			Results.Add(Result);
+		}
+	}
+
+	return Results;
+}
+
+TArray<FBlueprintSearchResult> UBlueprintExportReader::SearchInBlueprints(
+	const FString& Query,
+	const TArray<FString>& SearchPaths)
+{
+	TArray<FBlueprintSearchResult> Results;
+
+	if (Query.IsEmpty()) { return Results; }
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> AssetList;
+		AssetRegistry.GetAssetsByPath(FName(*SearchPath), AssetList, true);
+
+		for (const FAssetData& AssetData : AssetList)
+		{
+			if (!AssetData.AssetClass.ToString().Contains(TEXT("Blueprint")))
+			{
+				continue;
+			}
+
+			UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+			if (!Blueprint) { continue; }
+
+			const FString BPPath = Blueprint->GetPathName();
+
+			// Search variable names.
+			for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+			{
+				if (Var.VarName.ToString().Contains(Query, ESearchCase::IgnoreCase))
+				{
+					FBlueprintSearchResult Hit;
+					Hit.BlueprintPath = BPPath;
+					Hit.MatchField = TEXT("VariableName");
+					Hit.MatchValue = Var.VarName.ToString();
+					Results.Add(Hit);
+				}
+			}
+
+			// Gather all graphs.
+			TArray<UEdGraph*> AllGraphs;
+#if WITH_EDITORONLY_DATA
+			AllGraphs.Append(Blueprint->FunctionGraphs);
+			AllGraphs.Append(Blueprint->UbergraphPages);
+			AllGraphs.Append(Blueprint->MacroGraphs);
+			AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
+#endif
+
+			// Search function / event graph names.
+			for (const UEdGraph* Graph : AllGraphs)
+			{
+				if (!Graph) { continue; }
+				if (Graph->GetName().Contains(Query, ESearchCase::IgnoreCase))
+				{
+					FBlueprintSearchResult Hit;
+					Hit.BlueprintPath = BPPath;
+					Hit.GraphName = Graph->GetName();
+					Hit.MatchField = TEXT("GraphName");
+					Hit.MatchValue = Graph->GetName();
+					Results.Add(Hit);
+				}
+			}
+
+			// Search nodes: titles, comments, pin names, pin defaults.
+			for (const UEdGraph* Graph : AllGraphs)
+			{
+				if (!Graph) { continue; }
+				const FString GraphName = Graph->GetName();
+
+				for (const UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (!Node) { continue; }
+
+					const FString NodeGuid = Node->NodeGuid.ToString();
+					const FString NodeClassName = Node->GetClass()->GetName();
+
+					// Node title — guard against crash on broken nodes.
+					{
+						FString Title;
+						// GetNodeTitle can crash on broken struct nodes, so wrap carefully.
+						if (!IsPinTypeBroken_AnyPin(Node))
+						{
+							Title = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+						}
+						else
+						{
+							Title = NodeClassName;
+						}
+						if (Title.Contains(Query, ESearchCase::IgnoreCase))
+						{
+							FBlueprintSearchResult Hit;
+							Hit.BlueprintPath = BPPath;
+							Hit.GraphName = GraphName;
+							Hit.NodeGuid = NodeGuid;
+							Hit.NodeClass = NodeClassName;
+							Hit.MatchField = TEXT("NodeTitle");
+							Hit.MatchValue = Title;
+							Results.Add(Hit);
+						}
+					}
+
+					// Node comment.
+					if (!Node->NodeComment.IsEmpty() && Node->NodeComment.Contains(Query, ESearchCase::IgnoreCase))
+					{
+						FBlueprintSearchResult Hit;
+						Hit.BlueprintPath = BPPath;
+						Hit.GraphName = GraphName;
+						Hit.NodeGuid = NodeGuid;
+						Hit.NodeClass = NodeClassName;
+						Hit.MatchField = TEXT("NodeComment");
+						Hit.MatchValue = Node->NodeComment;
+						Results.Add(Hit);
+					}
+
+					// Pins: names and defaults.
+					for (const UEdGraphPin* Pin : Node->Pins)
+					{
+						if (!Pin) { continue; }
+
+						if (Pin->PinName.ToString().Contains(Query, ESearchCase::IgnoreCase))
+						{
+							FBlueprintSearchResult Hit;
+							Hit.BlueprintPath = BPPath;
+							Hit.GraphName = GraphName;
+							Hit.NodeGuid = NodeGuid;
+							Hit.NodeClass = NodeClassName;
+							Hit.MatchField = TEXT("PinName");
+							Hit.MatchValue = Pin->PinName.ToString();
+							Results.Add(Hit);
+						}
+
+						if (!Pin->DefaultValue.IsEmpty() && Pin->DefaultValue.Contains(Query, ESearchCase::IgnoreCase))
+						{
+							FBlueprintSearchResult Hit;
+							Hit.BlueprintPath = BPPath;
+							Hit.GraphName = GraphName;
+							Hit.NodeGuid = NodeGuid;
+							Hit.NodeClass = NodeClassName;
+							Hit.MatchField = TEXT("PinDefault");
+							Hit.MatchValue = Pin->PinName.ToString() + TEXT("=") + Pin->DefaultValue;
+							Results.Add(Hit);
+						}
+					}
+				}
+			}
 		}
 	}
 

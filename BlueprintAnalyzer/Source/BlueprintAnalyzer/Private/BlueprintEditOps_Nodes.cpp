@@ -13,6 +13,9 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node.h"
+#include "K2Node_BreakStruct.h"
+#include "K2Node_MakeStruct.h"
+#include "K2Node_SetFieldsInStruct.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "UObject/Class.h"
 
@@ -74,6 +77,144 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRemove(const TSharedPtr<FJsonObje
 
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(BPPath(Ctx.Blueprint));
 	Response->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+	return Response;
+}
+
+//------------------------------------------------------------------------------
+// edit.node.remove_broken
+//------------------------------------------------------------------------------
+
+// Returns true if a pin's type references a struct/object/class/enum whose
+// backing UObject no longer exists.
+static bool HasBrokenPinType(const UEdGraphPin* Pin)
+{
+	if (!Pin) { return false; }
+	static const TSet<FName> NeedsSubObject = {
+		UEdGraphSchema_K2::PC_Struct,
+		UEdGraphSchema_K2::PC_Object,
+		UEdGraphSchema_K2::PC_Class,
+		UEdGraphSchema_K2::PC_SoftObject,
+		UEdGraphSchema_K2::PC_SoftClass,
+		UEdGraphSchema_K2::PC_Interface,
+		UEdGraphSchema_K2::PC_Enum,
+	};
+	return NeedsSubObject.Contains(Pin->PinType.PinCategory) && !Pin->PinType.PinSubCategoryObject.IsValid();
+}
+
+static bool IsNodeBroken(const UEdGraphNode* Node)
+{
+	if (!Node) { return false; }
+
+	// Check node-level StructType on struct manipulation nodes.
+	// These store the struct as a member, not (only) on pins.
+	if (const UK2Node_BreakStruct* BreakNode = Cast<UK2Node_BreakStruct>(Node))
+	{
+		if (!BreakNode->StructType) { return true; }
+	}
+	else if (const UK2Node_MakeStruct* MakeNode = Cast<UK2Node_MakeStruct>(Node))
+	{
+		if (!MakeNode->StructType) { return true; }
+	}
+	else if (const UK2Node_SetFieldsInStruct* SetFieldsNode = Cast<UK2Node_SetFieldsInStruct>(Node))
+	{
+		if (!SetFieldsNode->StructType) { return true; }
+	}
+
+	// Check pin-level type references.
+	for (const UEdGraphPin* Pin : Node->Pins)
+	{
+		if (HasBrokenPinType(Pin)) { return true; }
+	}
+	return false;
+}
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRemoveBroken(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+
+	bool bDryRun = false;
+	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	// Gather all graphs: uber, function, macro, delegate signatures.
+	TArray<UEdGraph*> AllGraphs;
+	AllGraphs.Append(Blueprint->UbergraphPages);
+	AllGraphs.Append(Blueprint->FunctionGraphs);
+	AllGraphs.Append(Blueprint->MacroGraphs);
+	AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
+
+	// Collect broken nodes across all graphs.
+	TArray<UEdGraphNode*> BrokenNodes;
+	TArray<TSharedPtr<FJsonValue>> RemovedArray;
+
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) { continue; }
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) { continue; }
+			if (IsNodeBroken(Node))
+			{
+				BrokenNodes.Add(Node);
+
+				TSharedPtr<FJsonObject> Entry = MakeShareable(new FJsonObject);
+				Entry->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+				Entry->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+				Entry->SetStringField(TEXT("graph"), Graph->GetName());
+
+				// Safely get title — broken nodes may crash in GetNodeTitle.
+				// Just use the class name; GetNodeTitle can dereference the null struct.
+				Entry->SetStringField(TEXT("node_title"), Node->GetClass()->GetName());
+
+				// Flag if the node itself has a null StructType (BreakStruct/MakeStruct/SetFields).
+				if ((Cast<UK2Node_BreakStruct>(Node) && !Cast<UK2Node_BreakStruct>(Node)->StructType) ||
+					(Cast<UK2Node_MakeStruct>(Node) && !Cast<UK2Node_MakeStruct>(Node)->StructType) ||
+					(Cast<UK2Node_SetFieldsInStruct>(Node) && !Cast<UK2Node_SetFieldsInStruct>(Node)->StructType))
+				{
+					Entry->SetBoolField(TEXT("null_struct_type"), true);
+				}
+
+				// List the broken pins.
+				TArray<TSharedPtr<FJsonValue>> BrokenPins;
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (HasBrokenPinType(Pin))
+					{
+						TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject);
+						PinObj->SetStringField(TEXT("pin_name"), Pin->PinName.ToString());
+						PinObj->SetStringField(TEXT("pin_category"), Pin->PinType.PinCategory.ToString());
+						BrokenPins.Add(MakeShareable(new FJsonValueObject(PinObj)));
+					}
+				}
+				Entry->SetArrayField(TEXT("broken_pins"), BrokenPins);
+
+				RemovedArray.Add(MakeShareable(new FJsonValueObject(Entry)));
+			}
+		}
+	}
+
+	// Remove the nodes (unless dry run).
+	if (!bDryRun)
+	{
+		for (UEdGraphNode* Node : BrokenNodes)
+		{
+			FBlueprintEditorUtils::RemoveNode(Blueprint, Node, /*bDontRecompile*/true);
+		}
+		if (BrokenNodes.Num() > 0)
+		{
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		}
+	}
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetArrayField(bDryRun ? TEXT("broken_nodes") : TEXT("removed_nodes"), RemovedArray);
+	Response->SetNumberField(TEXT("count"), RemovedArray.Num());
+	if (bDryRun) { Response->SetBoolField(TEXT("dry_run"), true); }
 	return Response;
 }
 

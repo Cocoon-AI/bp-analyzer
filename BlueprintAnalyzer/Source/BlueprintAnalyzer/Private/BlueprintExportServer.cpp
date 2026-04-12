@@ -551,6 +551,27 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Result);
 	}
 
+	if (Method == TEXT("search"))
+	{
+		FString Dir;
+		if (!Params->TryGetStringField(TEXT("dir"), Dir) || Dir.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dir"));
+		}
+
+		FString Query;
+		if (!Params->TryGetStringField(TEXT("query"), Query) || Query.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: query"));
+		}
+
+		TArray<FString> SearchPaths;
+		SearchPaths.Add(Dir);
+
+		TSharedPtr<FJsonObject> Result = Commandlet->SearchInBlueprintsToJson(Query, SearchPaths);
+		return MakeResponse(Id, Result);
+	}
+
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));
 }
 

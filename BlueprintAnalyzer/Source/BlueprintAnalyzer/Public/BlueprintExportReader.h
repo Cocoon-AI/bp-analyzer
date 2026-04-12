@@ -124,6 +124,19 @@ public:
 		UPARAM(ref) const TArray<FString>& SearchPaths);
 
 	/**
+	 * Search text across all blueprints in the given paths (like Find in Blueprints)
+	 * Searches node titles, comments, pin names, pin defaults, variable names,
+	 * function names, and event names.
+	 * @param Query Text to search for (case-insensitive substring match)
+	 * @param SearchPaths Paths to search in
+	 * @return Array of search hits
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	TArray<FBlueprintSearchResult> SearchInBlueprints(
+		const FString& Query,
+		UPARAM(ref) const TArray<FString>& SearchPaths);
+
+	/**
 	 * Get assets that reference (depend on) this asset
 	 * This is the reverse of GetBlueprintReferences - finds what USES this asset
 	 * @param AssetPath Path to the asset

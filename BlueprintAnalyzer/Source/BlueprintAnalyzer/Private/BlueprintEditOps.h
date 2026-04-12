@@ -35,6 +35,8 @@ public:
 
 	// --- Phase B: variables + CDO (BlueprintEditOps_Variables.cpp) ---
 
+	static TSharedPtr<FJsonObject> VariableList(const TSharedPtr<FJsonObject>& Params);
+	static TSharedPtr<FJsonObject> PurgePhantom(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableAdd(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableRemove(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableRename(const TSharedPtr<FJsonObject>& Params);
@@ -69,6 +71,7 @@ public:
 
 	// BlueprintEditOps_Nodes.cpp (generic node/pin ops)
 	static TSharedPtr<FJsonObject> NodeRemove(const TSharedPtr<FJsonObject>& Params);
+	static TSharedPtr<FJsonObject> NodeRemoveBroken(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> NodeMove(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> NodeAddGeneric(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> PinSetDefault(const TSharedPtr<FJsonObject>& Params);

@@ -185,6 +185,10 @@ struct BLUEPRINTANALYZER_API FBlueprintVariableData
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	FString ToolTip;
+
+	/** True when the variable's type references a class/struct that no longer exists. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	bool bIsTypeBroken = false;
 };
 
 /**
@@ -534,4 +538,32 @@ struct BLUEPRINTANALYZER_API FBlueprintCppFunctionUsage
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	bool bIsImplementation = false;
+};
+
+/**
+ * Search hit from a Find-in-Blueprints style text search
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintSearchResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString BlueprintPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString GraphName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString NodeGuid;
+
+	/** What matched: NodeTitle, NodeComment, PinName, PinDefault, VariableName, FunctionName, EventName */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString MatchField;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString MatchValue;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString NodeClass;
 };

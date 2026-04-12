@@ -59,6 +59,7 @@ func main() {
 		nativeeventsCmd(),
 		findeventsCmd(),
 		findpropCmd(),
+		searchCmd(),
 		editCmd(),
 		versionCmd(),
 	)
@@ -472,5 +473,27 @@ func findpropCmd() *cobra.Command {
 	cmd.Flags().StringVar(&parentClass, "parentclass", "", "Filter by parent class")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("prop")
+	return cmd
+}
+
+func searchCmd() *cobra.Command {
+	var (
+		dir   string
+		query string
+	)
+	cmd := &cobra.Command{
+		Use:   "search",
+		Short: "Search text across Blueprints (node titles, comments, pin names/defaults, variable names)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("search", map[string]interface{}{
+				"dir":   dir,
+				"query": query,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required)")
+	cmd.Flags().StringVar(&query, "query", "", "Text to search for (required)")
+	_ = cmd.MarkFlagRequired("dir")
+	_ = cmd.MarkFlagRequired("query")
 	return cmd
 }

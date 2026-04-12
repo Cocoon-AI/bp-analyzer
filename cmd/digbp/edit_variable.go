@@ -11,6 +11,7 @@ func editVariableCmd() *cobra.Command {
 		Short: "Edit Blueprint member variables",
 	}
 	cmd.AddCommand(
+		editVariableListCmd(),
 		editVariableAddCmd(),
 		editVariableRemoveCmd(),
 		editVariableRenameCmd(),
@@ -36,6 +37,28 @@ func editCdoCmd() *cobra.Command {
 }
 
 // --- variable subcommands ---
+
+func editVariableListCmd() *cobra.Command {
+	var (
+		path          string
+		includeBroken bool
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List member variables (use --include-broken for phantom/deleted-type vars)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{"path": path}
+			if includeBroken {
+				params["include_broken"] = true
+			}
+			return callServer("edit.variable.list", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().BoolVar(&includeBroken, "include-broken", false, "Include variables with broken/deleted types")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
 
 func editVariableAddCmd() *cobra.Command {
 	var (
@@ -89,18 +112,26 @@ func editVariableAddCmd() *cobra.Command {
 }
 
 func editVariableRemoveCmd() *cobra.Command {
-	var path, name string
+	var (
+		path, name string
+		force      bool
+	)
 	cmd := &cobra.Command{
 		Use:   "remove",
-		Short: "Remove a member variable",
+		Short: "Remove a member variable (use --force for phantom/broken-type vars)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return callServer("edit.variable.remove", map[string]interface{}{
+			params := map[string]interface{}{
 				"path": path, "name": name,
-			})
+			}
+			if force {
+				params["force"] = true
+			}
+			return callServer("edit.variable.remove", params)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
 	cmd.Flags().StringVar(&name, "name", "", "Variable name (required)")
+	cmd.Flags().BoolVar(&force, "force", false, "Force-remove even if type is broken/unresolvable")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("name")
 	return cmd

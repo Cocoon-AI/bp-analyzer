@@ -13,6 +13,7 @@ func editNodeCmd() *cobra.Command {
 	cmd.AddCommand(
 		// Generic
 		editNodeRemoveCmd(),
+		editNodeRemoveBrokenCmd(),
 		editNodeMoveCmd(),
 		editNodeAddGenericCmd(),
 		// High-level builders
@@ -77,6 +78,28 @@ func editNodeRemoveCmd() *cobra.Command {
 	addGraphFlags(cmd, &path, &graph)
 	cmd.Flags().StringVar(&guid, "node-guid", "", "Node GUID (required)")
 	_ = cmd.MarkFlagRequired("node-guid")
+	return cmd
+}
+
+func editNodeRemoveBrokenCmd() *cobra.Command {
+	var (
+		path   string
+		dryRun bool
+	)
+	cmd := &cobra.Command{
+		Use:   "remove-broken",
+		Short: "Remove all nodes with broken/deleted struct types (use --dry-run to preview)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{"path": path}
+			if dryRun {
+				params["dry_run"] = true
+			}
+			return callServer("edit.node.remove_broken", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List broken nodes without removing them")
+	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }
 

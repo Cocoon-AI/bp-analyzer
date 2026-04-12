@@ -28,6 +28,7 @@ Changes stage in memory until explicitly committed with 'edit compile' and
 		// Phase B (variables + CDO)
 		editVariableCmd(),
 		editCdoCmd(),
+		editPurgePhantomCmd(),
 		// Phase C (functions, events, components)
 		editFunctionCmd(),
 		editEventCmd(),
@@ -145,6 +146,40 @@ func editRemoveInterfaceCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&preserveFunctions, "preserve-functions", false, "Keep the interface's function graphs as local functions")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("interface")
+	return cmd
+}
+
+func editPurgePhantomCmd() *cobra.Command {
+	var (
+		path, property string
+		dryRun         bool
+	)
+	cmd := &cobra.Command{
+		Use:   "purge-phantom",
+		Short: "Find and remove phantom properties (NewVariables, graph LocalVariables, GeneratedClass)",
+		Long: `Searches for a named property across all locations where it can hide:
+  1. Blueprint NewVariables (member variables)
+  2. Graph LocalVariables (function-scoped locals)
+  3. GeneratedClass (compiled FProperty, stale from prior compile)
+
+Removes from 1 and 2, then forces a full recompile to clear 3.
+Use --dry-run to see where the property lives without mutating.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"path":     path,
+				"property": property,
+			}
+			if dryRun {
+				params["dry_run"] = true
+			}
+			return callServer("edit.purge_phantom", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().StringVar(&property, "property", "", "Property name to find and remove (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report locations without removing")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("property")
 	return cmd
 }
 

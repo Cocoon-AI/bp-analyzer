@@ -99,6 +99,9 @@ public:
 	// Find blueprints with specific property values
 	TSharedPtr<FJsonObject> FindPropertyToJson(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths);
 
+	// Search text across all blueprints (find in blueprints)
+	TSharedPtr<FJsonObject> SearchInBlueprintsToJson(const FString& Query, const TArray<FString>& SearchPaths);
+
 	// Export reference viewer graph (bidirectional)
 	TSharedPtr<FJsonObject> ExportRefViewToJson(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly);
 
