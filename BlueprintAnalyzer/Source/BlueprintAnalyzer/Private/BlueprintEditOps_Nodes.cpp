@@ -121,11 +121,11 @@ static bool IsNodeBroken(const UEdGraphNode* Node)
 		if (!SetFieldsNode->StructType) { return true; }
 	}
 
-	// Check async action nodes — ProxyFactoryClass or ProxyClass null means
-	// the latent action class was deleted.
+	// Check async action nodes — proxy class null means the latent action class
+	// was deleted. Use public getters (members are protected in UE4.27).
 	if (const UK2Node_AsyncAction* AsyncNode = Cast<UK2Node_AsyncAction>(Node))
 	{
-		if (!AsyncNode->ProxyFactoryClass || !AsyncNode->ProxyClass) { return true; }
+		if (!AsyncNode->GetProxyFactoryClass() || !AsyncNode->GetProxyClass()) { return true; }
 	}
 
 	// Check pin-level type references.
@@ -189,7 +189,7 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRemoveBroken(const TSharedPtr<FJs
 
 				if (const UK2Node_AsyncAction* AsyncNode = Cast<UK2Node_AsyncAction>(Node))
 				{
-					if (!AsyncNode->ProxyFactoryClass || !AsyncNode->ProxyClass)
+					if (!AsyncNode->GetProxyFactoryClass() || !AsyncNode->GetProxyClass())
 					{
 						Entry->SetBoolField(TEXT("null_proxy_class"), true);
 					}
