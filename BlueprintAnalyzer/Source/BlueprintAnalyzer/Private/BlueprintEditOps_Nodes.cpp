@@ -13,6 +13,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node.h"
+#include "K2Node_AsyncAction.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_MakeStruct.h"
 #include "K2Node_SetFieldsInStruct.h"
@@ -120,6 +121,13 @@ static bool IsNodeBroken(const UEdGraphNode* Node)
 		if (!SetFieldsNode->StructType) { return true; }
 	}
 
+	// Check async action nodes — ProxyFactoryClass or ProxyClass null means
+	// the latent action class was deleted.
+	if (const UK2Node_AsyncAction* AsyncNode = Cast<UK2Node_AsyncAction>(Node))
+	{
+		if (!AsyncNode->ProxyFactoryClass || !AsyncNode->ProxyClass) { return true; }
+	}
+
 	// Check pin-level type references.
 	for (const UEdGraphPin* Pin : Node->Pins)
 	{
@@ -177,6 +185,14 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRemoveBroken(const TSharedPtr<FJs
 					(Cast<UK2Node_SetFieldsInStruct>(Node) && !Cast<UK2Node_SetFieldsInStruct>(Node)->StructType))
 				{
 					Entry->SetBoolField(TEXT("null_struct_type"), true);
+				}
+
+				if (const UK2Node_AsyncAction* AsyncNode = Cast<UK2Node_AsyncAction>(Node))
+				{
+					if (!AsyncNode->ProxyFactoryClass || !AsyncNode->ProxyClass)
+					{
+						Entry->SetBoolField(TEXT("null_proxy_class"), true);
+					}
 				}
 
 				// List the broken pins.
