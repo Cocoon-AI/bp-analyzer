@@ -13,12 +13,13 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node.h"
-#include "K2Node_AsyncAction.h"
+#include "K2Node_BaseAsyncTask.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_MakeStruct.h"
 #include "K2Node_SetFieldsInStruct.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -122,10 +123,13 @@ static bool IsNodeBroken(const UEdGraphNode* Node)
 	}
 
 	// Check async action nodes — proxy class null means the latent action class
-	// was deleted. Use public getters (members are protected in UE4.27).
-	if (const UK2Node_AsyncAction* AsyncNode = Cast<UK2Node_AsyncAction>(Node))
+	// was deleted. Members are protected in UE4.27 with no getters, so use reflection.
+	if (const UK2Node_BaseAsyncTask* AsyncNode = Cast<UK2Node_BaseAsyncTask>(Node))
 	{
-		if (!AsyncNode->GetProxyFactoryClass() || !AsyncNode->GetProxyClass()) { return true; }
+		FObjectProperty* Prop = CastField<FObjectProperty>(
+			UK2Node_BaseAsyncTask::StaticClass()->FindPropertyByName(TEXT("ProxyFactoryClass")));
+		UClass* FactoryClass = Prop ? Cast<UClass>(Prop->GetObjectPropertyValue_InContainer(AsyncNode)) : nullptr;
+		if (!FactoryClass) { return true; }
 	}
 
 	// Check pin-level type references.
@@ -187,9 +191,9 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRemoveBroken(const TSharedPtr<FJs
 					Entry->SetBoolField(TEXT("null_struct_type"), true);
 				}
 
-				if (const UK2Node_AsyncAction* AsyncNode = Cast<UK2Node_AsyncAction>(Node))
+				if (Cast<UK2Node_BaseAsyncTask>(Node))
 				{
-					if (!AsyncNode->GetProxyFactoryClass() || !AsyncNode->GetProxyClass())
+					// If we got here and it's an async node, the proxy class is null.
 					{
 						Entry->SetBoolField(TEXT("null_proxy_class"), true);
 					}
