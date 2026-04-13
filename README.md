@@ -1,12 +1,15 @@
 # Blueprint Analyzer
 
-UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis. Enables AI tools like Claude Code to inspect Blueprint structure, logic flow, and C++ function usage for debugging and migration assistance.
+UE4.27 Editor plugin providing a CLI commandlet for Blueprint analysis and editing. Enables AI tools like Claude Code to inspect Blueprint structure, logic flow, and C++ function usage for debugging and migration assistance, and to mutate Blueprints via JSON-RPC.
 
 ## Features
 
 - **Export Blueprints** in three formats: compact pseudocode, full JSON, or C++ migration skeleton
 - **Analyze C++ usage** - find all C++ function calls within a Blueprint
+- **Text search** - find-in-blueprints style search across node titles, comments, pin names/defaults, variable names
 - **Search capabilities** - find Blueprints calling specific functions, implementing events, or with specific property values
+- **Edit Blueprints** - add/remove/modify variables, functions, events, dispatchers, nodes, and components via JSON-RPC
+- **Cleanup tools** - detect and remove broken-type nodes/variables, purge phantom properties from compiled classes
 - **Dependency analysis** - export asset references, dependency graphs, and bidirectional reference viewer
 - **Complexity metrics** - node counts, connection counts, and complexity scores
 - **Persistent server mode** - keeps UE4 loaded for instant repeated queries via the `digbp` CLI
@@ -94,6 +97,30 @@ digbp stop        # Shutdown server
 | `digbp nativeevents` | Find native event implementations | `--dir` |
 | `digbp findevents` | Find implementable event implementations | `--dir`, `--event` |
 | `digbp findprop` | Find Blueprints by CDO property | `--dir`, `--prop` |
+| `digbp search` | Text search across Blueprints | `--dir`, `--query` |
+| `digbp edit` | Mutate Blueprints (see below) | varies |
+
+### Edit Commands
+
+| Command | Description |
+|---------|-------------|
+| `digbp edit compile` | Compile a Blueprint |
+| `digbp edit save` | Save a Blueprint to disk |
+| `digbp edit save-and-compile` | Compile then save |
+| `digbp edit variable list` | List variables (`--include-broken` for deleted types) |
+| `digbp edit variable add` | Add a member variable |
+| `digbp edit variable remove` | Remove a variable (`--force` for broken types) |
+| `digbp edit variable rename` | Rename a variable |
+| `digbp edit function add` | Add a function graph |
+| `digbp edit function remove` | Remove a function |
+| `digbp edit event add-custom` | Add a custom event |
+| `digbp edit event remove` | Remove an event |
+| `digbp edit dispatcher remove` | Remove an event dispatcher |
+| `digbp edit node remove` | Remove a node by GUID |
+| `digbp edit node remove-broken` | Remove all nodes with broken types (`--dry-run`) |
+| `digbp edit purge-phantom` | Find/remove phantom properties + recompile (`--dry-run`) |
+| `digbp edit component add` | Add a component |
+| `digbp edit component remove` | Remove a component |
 
 ### Common Flags
 
@@ -297,12 +324,14 @@ bp-analyzer/
 │       │   ├── BlueprintExportData.h     # Data structures (14 USTRUCTs)
 │       │   └── BlueprintExportReader.h   # Reader API
 │       └── Private/
-│           ├── BlueprintExportReader.cpp  # Core implementation
+│           ├── BlueprintExportReader.cpp  # Core read/search implementation
 │           ├── BlueprintExportCommandlet.cpp # CLI + output formatting
 │           ├── BlueprintExportServer.cpp  # Named pipe server + JSON-RPC
+│           ├── BlueprintEditOps_*.cpp     # Edit operations (variables, functions, nodes, etc.)
 │           └── BlueprintAnalyzerModule.*
 ├── cmd/digbp/                      # Go CLI tool
-│   └── main.go
+│   ├── main.go                     # Root commands + search/find
+│   └── edit*.go                    # Edit subcommands
 ├── internal/                       # Go internal packages
 │   ├── config/config.go            # Config file loading
 │   ├── pipe/client.go              # Named pipe client

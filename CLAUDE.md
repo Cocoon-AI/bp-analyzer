@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with the Blueprint Analy
 
 ## Project Overview
 
-UE4.27 Editor plugin providing a CLI commandlet for read-only Blueprint analysis. Enables AI tools to inspect Blueprint structure, logic flow, and C++ function usage for debugging and migration assistance.
+UE4.27 Editor plugin providing a CLI commandlet for Blueprint analysis and editing. Enables AI tools to inspect Blueprint structure, logic flow, and C++ function usage for debugging and migration assistance, and to mutate Blueprints (variables, functions, events, dispatchers, nodes, components) via JSON-RPC.
 
 ## Architecture
 
@@ -144,8 +144,67 @@ digbp findevents --dir=/Game/ --event=ReceiveBeginPlay
 digbp findprop --dir=/Game/ --prop=bCanBeDamaged --value=true
 digbp findprop --dir=/Game/ --prop=bCanBeDamaged --parentclass=APawn
 
+# Text search across Blueprints (like Find in Blueprints)
+digbp search --dir=/Game/UI/ --query=PlayAnimation
+digbp search --dir=/Game/ --query=NFTRecipe --pretty
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
+```
+
+### Edit Commands (Blueprint Mutation)
+
+All edit operations stage changes in memory until explicitly saved with `edit save` or `edit save-and-compile`.
+
+```bash
+# Compile / save
+digbp edit compile --path=/Game/BP
+digbp edit save --path=/Game/BP
+digbp edit save-and-compile --path=/Game/BP
+
+# Variables
+digbp edit variable list --path=/Game/BP                          # List member variables
+digbp edit variable list --path=/Game/BP --include-broken         # Include vars with deleted types
+digbp edit variable add --path=/Game/BP --name=Health --type=float
+digbp edit variable remove --path=/Game/BP --name=Health
+digbp edit variable remove --path=/Game/BP --name=Broken --force  # Force-remove broken-type vars
+digbp edit variable rename --path=/Game/BP --old-name=Hp --new-name=Health
+digbp edit variable set-type --path=/Game/BP --name=Health --type=int
+digbp edit variable set-default --path=/Game/BP --name=Health --value=100
+digbp edit variable set-flags --path=/Game/BP --name=Health --public --replicated
+
+# Functions
+digbp edit function add --path=/Game/BP --name=DoStuff
+digbp edit function remove --path=/Game/BP --name=DoStuff
+digbp edit function rename --path=/Game/BP --old-name=Foo --new-name=Bar
+
+# Events
+digbp edit event add-custom --path=/Game/BP --name=OnReady
+digbp edit event remove --path=/Game/BP --name=OnReady
+digbp edit event implement --path=/Game/BP --event=ReceiveBeginPlay
+
+# Event dispatchers
+digbp edit dispatcher remove --path=/Game/BP --name=OnUpdate
+
+# Components
+digbp edit component add --path=/Game/BP --name=Mesh --class=StaticMeshComponent
+digbp edit component remove --path=/Game/BP --name=Mesh
+
+# Nodes
+digbp edit node remove --path=/Game/BP --graph=EventGraph --node-guid=GUID
+digbp edit node remove-broken --path=/Game/BP --dry-run           # Preview broken nodes
+digbp edit node remove-broken --path=/Game/BP                     # Remove all broken nodes
+digbp edit node add-function-call --path=/Game/BP --graph=EventGraph --function=PrintString
+
+# Cleanup tools
+digbp edit purge-phantom --path=/Game/BP --property=DeletedVar --dry-run  # Find phantom property
+digbp edit purge-phantom --path=/Game/BP --property=DeletedVar            # Remove + recompile
+
+# Blueprint metadata
+digbp edit reparent --path=/Game/BP --parent-class=/Script/Engine.Actor
+digbp edit add-interface --path=/Game/BP --interface=MyInterface
+digbp edit remove-interface --path=/Game/BP --interface=MyInterface
+digbp edit set-flags --path=/Game/BP --is-abstract=true
 ```
 
 ### Auto-Start
@@ -209,6 +268,7 @@ C++ migration stubs:
 | Property Search | `-dir=... -findprop=Name` | Find Blueprints with CDO property |
 | Property Search (filtered) | `-dir=... -findprop=Name -propvalue=Value` | Filter by property value |
 | Property Search (by class) | `-dir=... -findprop=Name -parentclass=Class` | Filter by parent class |
+| Text Search | `-dir=... -search=Text` | Find in Blueprints (nodes, pins, comments, variables) |
 | Analyze | `-json -analyze` | Include complexity metrics |
 | File Output | `-out=file.json` | Write to file instead of stdout |
 | Server Mode | `-pipeserver` | Start persistent named pipe server |
@@ -226,14 +286,28 @@ bp-analyzer/
 │       │   ├── BlueprintExportData.h     # Data structures (14 USTRUCTs)
 │       │   └── BlueprintExportReader.h   # Reader UCLASS API
 │       └── Private/
-│           ├── BlueprintExportReader.cpp # Core implementation (~1300 lines)
+│           ├── BlueprintExportReader.cpp # Core read/search implementation
 │           ├── BlueprintExportCommandlet.cpp # CLI + output formatting
 │           ├── BlueprintExportCommandlet.h
 │           ├── BlueprintExportServer.cpp # Named pipe server + JSON-RPC dispatch
 │           ├── BlueprintExportServer.h
+│           ├── BlueprintExportServerEditDispatch.cpp # Edit method routing
+│           ├── BlueprintEditOps.h        # Edit operation declarations
+│           ├── BlueprintEditHelpers.*    # Shared edit utilities
+│           ├── BlueprintEditOps_Metadata.cpp # Compile, save, reparent, interfaces
+│           ├── BlueprintEditOps_Variables.cpp # Variable CRUD, CDO, purge-phantom
+│           ├── BlueprintEditOps_Functions.cpp # Function/event/dispatcher ops
+│           ├── BlueprintEditOps_Components.cpp # Component add/remove/reparent
+│           ├── BlueprintEditOps_Nodes.cpp    # Node remove/move/add, remove-broken
+│           ├── BlueprintEditOps_NodeBuilders.cpp # High-level node builders
 │           └── BlueprintAnalyzerModule.*
 ├── cmd/digbp/
-│   └── main.go                           # digbp CLI tool (Go)
+│   ├── main.go                           # digbp CLI tool (Go)
+│   ├── edit.go                           # Edit command group
+│   ├── edit_variable.go                  # Variable subcommands
+│   ├── edit_function.go                  # Function/event/dispatcher subcommands
+│   ├── edit_node.go                      # Node/pin subcommands
+│   └── edit_component.go                 # Component subcommands
 ├── internal/
 │   ├── config/config.go                  # Config file loading (~/.digbp.yaml)
 │   ├── pipe/client.go                    # Named pipe client with length framing
@@ -254,7 +328,7 @@ bp-analyzer/
 | `FBlueprintNodeData` | Node: GUID, type, title, comment, input/output pins, position, function name/class, native function flag |
 | `FBlueprintPinData` | Pin: name, type, default value, array/reference/const flags, linked connections |
 | `FBlueprintConnectionData` | Graph edge: source node GUID + pin, target node GUID + pin |
-| `FBlueprintVariableData` | Variable: name, type, category, default, public/readonly/visible flags, replication settings |
+| `FBlueprintVariableData` | Variable: name, type, category, default, public/readonly/visible flags, replication settings, `bIsTypeBroken` flag |
 | `FBlueprintFunctionData` | Function: name, category, inputs, outputs, pure/static/const/override flags, nodes, connections |
 | `FBlueprintEventData` | Event: name, type (Custom/NativeEvent/ImplementableEvent/Event), nodes, connections |
 | `FBlueprintDispatcherData` | Event dispatcher: name, parameters, category, tooltip |
@@ -264,6 +338,7 @@ bp-analyzer/
 | `FBlueprintPropertySearchResult` | Property search result: blueprint path/name, parent class, property name/value/type |
 | `FAssetReferenceNode` | Reference graph node: path, name, class, depth, dependencies, referencers, hard/soft/blueprint/native flags |
 | `FAssetReferenceGraph` | Reference viewer graph: root path, depths, nodes map, dependency/referencer/blueprint/native counts |
+| `FBlueprintSearchResult` | Search hit: blueprint path, graph name, node GUID, match field (NodeTitle/NodeComment/PinName/PinDefault/VariableName/GraphName), match value, node class |
 
 ## C++ Function Detection
 
@@ -309,6 +384,10 @@ Module type is `Editor` (requires editor, loads at Default phase).
 - Use `FUNC_BlueprintEvent + FUNC_Native` for BlueprintNativeEvent detection
 - Use `FindMetaData()` not `GetMetaData()` (returns pointer)
 - Include `UObject/Script.h` for FUNC_* flags
+- `Blueprint->PropertyGuids` does NOT exist in UE4.27 (UE5 only)
+- `UEdGraph::LocalVariables` does NOT exist in UE4.27 (UE5 only)
+- UE4 uses unity builds — static functions in anonymous namespaces across .cpp files can collide. Use unique prefixes (e.g., `EditOps_PinTypeToString`)
+- All graph iteration must include `Blueprint->DelegateSignatureGraphs` alongside FunctionGraphs/UbergraphPages/MacroGraphs — dispatchers store parameters as pins on function entry nodes in these graphs
 
 ### Testing
 
