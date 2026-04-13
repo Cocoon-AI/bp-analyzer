@@ -37,6 +37,35 @@ func editEventCmd() *cobra.Command {
 	return cmd
 }
 
+func editDispatcherCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "dispatcher",
+		Short: "Edit Blueprint event dispatchers",
+	}
+	cmd.AddCommand(
+		editDispatcherRemoveCmd(),
+	)
+	return cmd
+}
+
+func editDispatcherRemoveCmd() *cobra.Command {
+	var path, name string
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove an event dispatcher by name",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("edit.dispatcher.remove", map[string]interface{}{
+				"path": path, "name": name,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().StringVar(&name, "name", "", "Dispatcher name (required)")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("name")
+	return cmd
+}
+
 // --- function subcommands ---
 
 func editFunctionAddCmd() *cobra.Command {

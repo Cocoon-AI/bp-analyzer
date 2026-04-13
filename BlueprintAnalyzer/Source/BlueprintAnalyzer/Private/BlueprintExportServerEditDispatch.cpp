@@ -51,6 +51,7 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 	if (Method == TEXT("edit.event.add_custom"))      { return FBlueprintEditOps::EventAddCustom(Params); }
 	if (Method == TEXT("edit.event.remove"))          { return FBlueprintEditOps::EventRemove(Params); }
 	if (Method == TEXT("edit.event.implement"))       { return FBlueprintEditOps::EventImplement(Params); }
+	if (Method == TEXT("edit.dispatcher.remove"))     { return FBlueprintEditOps::DispatcherRemove(Params); }
 
 	if (Method == TEXT("edit.component.add"))          { return FBlueprintEditOps::ComponentAdd(Params); }
 	if (Method == TEXT("edit.component.remove"))       { return FBlueprintEditOps::ComponentRemove(Params); }

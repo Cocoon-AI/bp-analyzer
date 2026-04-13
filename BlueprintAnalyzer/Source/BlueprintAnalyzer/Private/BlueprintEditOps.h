@@ -60,6 +60,7 @@ public:
 	static TSharedPtr<FJsonObject> EventAddCustom(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> EventRemove(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> EventImplement(const TSharedPtr<FJsonObject>& Params);
+	static TSharedPtr<FJsonObject> DispatcherRemove(const TSharedPtr<FJsonObject>& Params);
 
 	// BlueprintEditOps_Components.cpp
 	static TSharedPtr<FJsonObject> ComponentAdd(const TSharedPtr<FJsonObject>& Params);

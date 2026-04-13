@@ -653,3 +653,45 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::EventImplement(const TSharedPtr<FJson
 	Response->SetStringField(TEXT("node_guid"), NewEventNode->NodeGuid.ToString());
 	return Response;
 }
+
+//------------------------------------------------------------------------------
+// edit.dispatcher.remove
+//------------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::DispatcherRemove(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path, Name;
+	TSharedPtr<FJsonObject> Err;
+	if (!FBlueprintEditHelpers::RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+	if (!FBlueprintEditHelpers::RequireString(Params, TEXT("name"), Name, Err)) { return Err; }
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	// Find the delegate signature graph by name.
+	UEdGraph* FoundGraph = nullptr;
+	for (UEdGraph* Graph : Blueprint->DelegateSignatureGraphs)
+	{
+		if (Graph && Graph->GetName() == Name)
+		{
+			FoundGraph = Graph;
+			break;
+		}
+	}
+
+	if (!FoundGraph)
+	{
+		return FBlueprintEditHelpers::MakeEditError(
+			FString::Printf(TEXT("Event dispatcher '%s' not found in DelegateSignatureGraphs"), *Name));
+	}
+
+	// Remove the delegate graph. This also removes the corresponding multicast
+	// delegate variable from NewVariables.
+	FBlueprintEditorUtils::RemoveGraph(Blueprint, FoundGraph);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetStringField(TEXT("name"), Name);
+	return Response;
+}

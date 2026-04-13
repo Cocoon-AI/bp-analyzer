@@ -29,9 +29,10 @@ Changes stage in memory until explicitly committed with 'edit compile' and
 		editVariableCmd(),
 		editCdoCmd(),
 		editPurgePhantomCmd(),
-		// Phase C (functions, events, components)
+		// Phase C (functions, events, dispatchers, components)
 		editFunctionCmd(),
 		editEventCmd(),
+		editDispatcherCmd(),
 		editComponentCmd(),
 		// Phase D (node graph editing)
 		editNodeCmd(),
