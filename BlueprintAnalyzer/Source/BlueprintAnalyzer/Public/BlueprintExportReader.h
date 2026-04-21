@@ -147,6 +147,20 @@ public:
 	TArray<FBlueprintReferenceData> GetAssetReferencers(const FString& AssetPath, bool bIncludeSoftReferences = true);
 
 	/**
+	 * Build a reverse index of every native C++ symbol referenced by any Blueprint
+	 * under SearchPaths. Walks parent class, K2Node_CallFunction, K2Node_VariableGet/Set,
+	 * K2Node_BaseMCDelegate subclasses (Add/Remove/Create/Assign/Call),
+	 * K2Node_DynamicCast, K2Node_MakeStruct/BreakStruct, K2Node_Event overrides of
+	 * native signatures, and every Blueprint member variable whose type resolves to
+	 * a native UClass or UScriptStruct.
+	 *
+	 * Returns both the reverse index (symbol -> callers) and the forward index
+	 * (BP -> symbols). Use the reverse index to answer "what BPs break if I delete X?".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Export")
+	FBlueprintCppAudit BuildCppReferenceAudit(UPARAM(ref) const TArray<FString>& SearchPaths);
+
+	/**
 	 * Build a complete reference viewer graph (bidirectional)
 	 * Like the Editor's Reference Viewer, shows both what an asset uses and what uses it
 	 * @param RootAssetPath The asset to center the graph on

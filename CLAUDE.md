@@ -148,6 +148,12 @@ digbp findprop --dir=/Game/ --prop=bCanBeDamaged --parentclass=APawn
 digbp search --dir=/Game/UI/ --query=PlayAnimation
 digbp search --dir=/Game/ --query=NFTRecipe --pretty
 
+# C++ reference audit (reverse-index: which BPs touch which native symbol)
+# Use before deleting C++ to find BPs that will break.
+digbp cpp-audit --dir=/Game/
+digbp cpp-audit --dir=/Game/ --out=cpp-refs.json
+digbp cpp-audit --dir=/Game/Showdown/ --pretty
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```
@@ -269,6 +275,7 @@ C++ migration stubs:
 | Property Search (filtered) | `-dir=... -findprop=Name -propvalue=Value` | Filter by property value |
 | Property Search (by class) | `-dir=... -findprop=Name -parentclass=Class` | Filter by parent class |
 | Text Search | `-dir=... -search=Text` | Find in Blueprints (nodes, pins, comments, variables) |
+| Cpp Audit | `-dir=... -cppaudit` | Reverse-index of every native C++ symbol any BP references |
 | Analyze | `-json -analyze` | Include complexity metrics |
 | File Output | `-out=file.json` | Write to file instead of stdout |
 | Server Mode | `-pipeserver` | Start persistent named pipe server |

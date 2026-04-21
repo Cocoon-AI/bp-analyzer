@@ -60,6 +60,7 @@ func main() {
 		findeventsCmd(),
 		findpropCmd(),
 		searchCmd(),
+		cppAuditCmd(),
 		editCmd(),
 		versionCmd(),
 	)
@@ -91,6 +92,32 @@ func printResult(result json.RawMessage) error {
 		}
 	}
 	fmt.Println(string(result))
+	return nil
+}
+
+// callServerToFile behaves like callServer but writes the result JSON to a file
+// instead of stdout. Pretty-prints if --pretty is set.
+func callServerToFile(method string, params interface{}, outPath string) error {
+	if err := server.EnsureRunning(cfg); err != nil {
+		return err
+	}
+	result, err := rpc.Call(cfg.PipeName, method, params)
+	if err != nil {
+		return err
+	}
+	payload := []byte(result)
+	if flagPretty {
+		var v interface{}
+		if err := json.Unmarshal(result, &v); err == nil {
+			if pretty, err := json.MarshalIndent(v, "", "  "); err == nil {
+				payload = pretty
+			}
+		}
+	}
+	if err := os.WriteFile(outPath, payload, 0644); err != nil {
+		return fmt.Errorf("write output file: %w", err)
+	}
+	fmt.Printf("Wrote %d bytes to %s\n", len(payload), outPath)
 	return nil
 }
 
@@ -495,5 +522,34 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&query, "query", "", "Text to search for (required)")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("query")
+	return cmd
+}
+
+func cppAuditCmd() *cobra.Command {
+	var (
+		dir string
+		out string
+	)
+	cmd := &cobra.Command{
+		Use:   "cpp-audit",
+		Short: "Build a reverse index of every native C++ symbol referenced by any Blueprint under --dir",
+		Long: `Walks every Blueprint under --dir and enumerates each reference to a native
+C++ symbol: parent class, K2Node_CallFunction targets, K2Node_VariableGet/Set
+on native UPROPERTYs, BlueprintAssignable delegate bindings, DynamicCast
+targets, Make/BreakStruct on native USTRUCTs, and BlueprintImplementable/
+NativeEvent overrides. Emits a reverse index (symbol -> BP callers) plus a
+forward index (BP -> symbols it touches).
+
+Use this before a C++ deletion to find what BPs will break.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if out != "" {
+				return callServerToFile("cpp_audit", map[string]interface{}{"dir": dir}, out)
+			}
+			return callServer("cpp_audit", map[string]interface{}{"dir": dir})
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to search (required, e.g. /Game/)")
+	cmd.Flags().StringVar(&out, "out", "", "Write output to file instead of stdout")
+	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }

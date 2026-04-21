@@ -206,6 +206,7 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 	bool bNativeEvents = Switches.Contains(TEXT("nativeevents"));
 	bool bRefView = Switches.Contains(TEXT("refview"));
 	bool bBlueprintsOnly = Switches.Contains(TEXT("bponly"));
+	bool bCppAudit = Switches.Contains(TEXT("cppaudit"));
 	int32 MaxDepth = 3;
 	int32 RefDepth = 3;
 	int32 ReferDepth = 3;
@@ -367,6 +368,12 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 			TArray<FString> SearchPaths;
 			SearchPaths.Add(DirectoryPath);
 			FindNativeEventImplementations(SearchPaths);
+		}
+		else if (bCppAudit)
+		{
+			TArray<FString> SearchPaths;
+			SearchPaths.Add(DirectoryPath);
+			BuildCppAudit(SearchPaths);
 		}
 		else
 		{
@@ -708,6 +715,70 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FindPropertyToJson(const FSt
 void UBlueprintExportCommandlet::FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths)
 {
 	OutputJson(FindPropertyToJson(PropertyName, PropertyValue, ParentClassName, SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppAuditToJson(const TArray<FString>& SearchPaths)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	FBlueprintCppAudit Audit = Reader->BuildCppReferenceAudit(SearchPaths);
+
+	TArray<TSharedPtr<FJsonValue>> SymbolArray;
+	for (const FBlueprintCppAuditSymbol& Sym : Audit.Symbols)
+	{
+		TSharedPtr<FJsonObject> SymJson = MakeShareable(new FJsonObject);
+		SymJson->SetStringField(TEXT("name"), Sym.Name);
+		SymJson->SetStringField(TEXT("owner"), Sym.Owner);
+		SymJson->SetStringField(TEXT("kind"), Sym.Kind);
+
+		TArray<TSharedPtr<FJsonValue>> Callers;
+		for (const FString& Caller : Sym.Callers)
+		{
+			Callers.Add(MakeShareable(new FJsonValueString(Caller)));
+		}
+		SymJson->SetArrayField(TEXT("callers"), Callers);
+		SymJson->SetNumberField(TEXT("caller_count"), Sym.Callers.Num());
+		SymbolArray.Add(MakeShareable(new FJsonValueObject(SymJson)));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> BpArray;
+	for (const FBlueprintCppAuditBp& Bp : Audit.Blueprints)
+	{
+		TSharedPtr<FJsonObject> BpJson = MakeShareable(new FJsonObject);
+		BpJson->SetStringField(TEXT("blueprint_path"), Bp.BlueprintPath);
+		BpJson->SetStringField(TEXT("parent_cpp_class"), Bp.ParentCppClass);
+
+		TArray<TSharedPtr<FJsonValue>> RefArray;
+		for (const FBlueprintCppSymbolRef& Ref : Bp.References)
+		{
+			TSharedPtr<FJsonObject> RefJson = MakeShareable(new FJsonObject);
+			RefJson->SetStringField(TEXT("name"), Ref.Name);
+			RefJson->SetStringField(TEXT("owner"), Ref.Owner);
+			RefJson->SetStringField(TEXT("kind"), Ref.Kind);
+			RefArray.Add(MakeShareable(new FJsonValueObject(RefJson)));
+		}
+		BpJson->SetArrayField(TEXT("references"), RefArray);
+		BpArray.Add(MakeShareable(new FJsonValueObject(BpJson)));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> PathArray;
+	for (const FString& P : Audit.SearchPaths)
+	{
+		PathArray.Add(MakeShareable(new FJsonValueString(P)));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetArrayField(TEXT("search_paths"), PathArray);
+	Result->SetNumberField(TEXT("blueprint_count"), Audit.BlueprintCount);
+	Result->SetNumberField(TEXT("symbol_count"), SymbolArray.Num());
+	Result->SetArrayField(TEXT("symbols"), SymbolArray);
+	Result->SetArrayField(TEXT("bps"), BpArray);
+	return Result;
+}
+
+void UBlueprintExportCommandlet::BuildCppAudit(const TArray<FString>& SearchPaths)
+{
+	OutputJson(CppAuditToJson(SearchPaths));
 }
 
 TSharedPtr<FJsonObject> UBlueprintExportCommandlet::SearchInBlueprintsToJson(const FString& Query, const TArray<FString>& SearchPaths)

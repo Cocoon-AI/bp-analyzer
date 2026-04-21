@@ -551,6 +551,21 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Result);
 	}
 
+	if (Method == TEXT("cpp_audit"))
+	{
+		FString Dir;
+		if (!Params->TryGetStringField(TEXT("dir"), Dir) || Dir.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dir"));
+		}
+
+		TArray<FString> SearchPaths;
+		SearchPaths.Add(Dir);
+
+		TSharedPtr<FJsonObject> Result = Commandlet->CppAuditToJson(SearchPaths);
+		return MakeResponse(Id, Result);
+	}
+
 	if (Method == TEXT("search"))
 	{
 		FString Dir;

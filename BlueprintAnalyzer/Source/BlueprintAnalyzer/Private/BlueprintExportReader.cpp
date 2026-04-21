@@ -30,8 +30,20 @@ static bool IsBlueprintImplementableEvent(const UFunction* Function)
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Tunnel.h"
+#include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "K2Node_BaseMCDelegate.h"
+#include "K2Node_AddDelegate.h"
+#include "K2Node_RemoveDelegate.h"
+#include "K2Node_ClearDelegate.h"
+#include "K2Node_CallDelegate.h"
+#include "K2Node_AssignDelegate.h"
+#include "K2Node_CreateDelegate.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_MakeStruct.h"
+#include "K2Node_BreakStruct.h"
+#include "Engine/UserDefinedStruct.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -846,23 +858,28 @@ TArray<FBlueprintVariableUsage> UBlueprintExportReader::FindBlueprintsUsingVaria
 					FName VarName;
 					UClass* OwningClass = nullptr;
 
+					// Resolve self-scope var references against the BP's own generated class.
+					// Passing nullptr here caused inherited native UPROPERTYs to report as
+					// VariableClass="" — which hid C++-owned variable accesses from cpp-audit
+					// and from callers filtering by OwningClass. Prefer SkeletonGeneratedClass
+					// because that's the editor-time class the K2 nodes resolve against.
+					UClass* SelfScope = Blueprint->SkeletonGeneratedClass
+						? (UClass*)Blueprint->SkeletonGeneratedClass
+						: (UClass*)Blueprint->GeneratedClass;
+
 					if (UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(Node))
 					{
 						if (!bIncludeSet) continue;
 						AccessKind = TEXT("set");
 						VarName = SetNode->GetVarName();
-						// GetMemberParentClass(nullptr) returns the explicit parent class if the
-						// reference names one, or nullptr for self-scope vars. That's fine — a
-						// self-scope miss just means the BlueprintPath already tells the caller
-						// where the var lives.
-						OwningClass = SetNode->VariableReference.GetMemberParentClass(nullptr);
+						OwningClass = SetNode->VariableReference.GetMemberParentClass(SelfScope);
 					}
 					else if (UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(Node))
 					{
 						if (!bIncludeGet) continue;
 						AccessKind = TEXT("get");
 						VarName = GetNode->GetVarName();
-						OwningClass = GetNode->VariableReference.GetMemberParentClass(nullptr);
+						OwningClass = GetNode->VariableReference.GetMemberParentClass(SelfScope);
 					}
 					else
 					{
@@ -1399,6 +1416,332 @@ TArray<FBlueprintSearchResult> UBlueprintExportReader::SearchInBlueprints(
 	}
 
 	return Results;
+}
+
+// ---- cpp-audit helpers ---------------------------------------------------
+//
+// Native-symbol detection for FBlueprintCppAudit. A class/struct is "native"
+// when it exists purely in C++ (ClassGeneratedBy / StructGeneratedBy is null).
+// SKEL_ and REINST_ classes appear during editor load as duplicates of native
+// classes with suffixed names; report them against their owner Blueprint's
+// generated class instead of leaking the reinstancer name.
+
+namespace CppAudit
+{
+	static bool IsNativeClass(const UClass* Cls)
+	{
+		return Cls && Cls->ClassGeneratedBy == nullptr;
+	}
+
+	static bool IsNativeStruct(const UScriptStruct* S)
+	{
+		return S && Cast<UUserDefinedStruct>(S) == nullptr;
+	}
+
+	// Strip leading U/A/F so exported names match the C++ source names callers grep for.
+	static FString StripPrefix(const FString& ClassName)
+	{
+		if (ClassName.Len() > 1)
+		{
+			const TCHAR C = ClassName[0];
+			if ((C == TEXT('U') || C == TEXT('A') || C == TEXT('F')) && FChar::IsUpper(ClassName[1]))
+			{
+				return ClassName.Mid(1);
+			}
+		}
+		return ClassName;
+	}
+
+	static FString NativeClassName(const UClass* Cls)
+	{
+		return Cls ? Cls->GetName() : FString();
+	}
+
+	// Track one BP's distinct references + push every new one into the reverse index.
+	struct FRefAggregator
+	{
+		TArray<FBlueprintCppSymbolRef> BpRefs;
+		TSet<FString> BpSeen;
+		TMap<FString, TSet<FString>>& ReverseIndex; // key = Kind|Owner|Name, value = set of caller paths
+		TMap<FString, FBlueprintCppSymbolRef>& SymbolMeta; // key -> canonical symbol metadata
+		FString BlueprintPath;
+
+		FRefAggregator(
+			TMap<FString, TSet<FString>>& InReverse,
+			TMap<FString, FBlueprintCppSymbolRef>& InMeta,
+			const FString& InBpPath)
+			: ReverseIndex(InReverse), SymbolMeta(InMeta), BlueprintPath(InBpPath) {}
+
+		void Record(const FString& Name, const FString& Owner, const FString& Kind)
+		{
+			if (Name.IsEmpty() && Owner.IsEmpty()) return;
+			const FString Key = Kind + TEXT("|") + Owner + TEXT("|") + Name;
+			if (!BpSeen.Contains(Key))
+			{
+				BpSeen.Add(Key);
+				FBlueprintCppSymbolRef Ref;
+				Ref.Name = Name;
+				Ref.Owner = Owner;
+				Ref.Kind = Kind;
+				BpRefs.Add(Ref);
+			}
+			// Reverse index accumulates across BPs
+			ReverseIndex.FindOrAdd(Key).Add(BlueprintPath);
+			if (!SymbolMeta.Contains(Key))
+			{
+				FBlueprintCppSymbolRef Meta;
+				Meta.Name = Name;
+				Meta.Owner = Owner;
+				Meta.Kind = Kind;
+				SymbolMeta.Add(Key, Meta);
+			}
+		}
+	};
+
+	// Emit UClass / USTRUCT refs for an object referenced by a pin type (e.g. a BP
+	// member variable whose type is a native class/struct).
+	static void RecordPinTypeObject(FRefAggregator& Agg, const UObject* SubObject)
+	{
+		if (!SubObject) return;
+		if (const UClass* AsClass = Cast<UClass>(SubObject))
+		{
+			if (IsNativeClass(AsClass))
+			{
+				Agg.Record(NativeClassName(AsClass), FString(), TEXT("UClass"));
+			}
+		}
+		else if (const UScriptStruct* AsStruct = Cast<UScriptStruct>(SubObject))
+		{
+			if (IsNativeStruct(AsStruct))
+			{
+				Agg.Record(AsStruct->GetName(), FString(), TEXT("USTRUCT"));
+			}
+		}
+	}
+}
+
+FBlueprintCppAudit UBlueprintExportReader::BuildCppReferenceAudit(const TArray<FString>& SearchPaths)
+{
+	FBlueprintCppAudit Audit;
+	Audit.SearchPaths = SearchPaths;
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TMap<FString, TSet<FString>> ReverseIndex;
+	TMap<FString, FBlueprintCppSymbolRef> SymbolMeta;
+	TArray<FBlueprintCppAuditBp> BpEntries;
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> AssetList;
+		AssetRegistry.GetAssetsByPath(FName(*SearchPath), AssetList, true);
+
+		for (const FAssetData& AssetData : AssetList)
+		{
+			// Pre-filter on AssetClass BEFORE GetAsset() to avoid loading every
+			// .uasset in the search path. Blueprint/WidgetBlueprint/AnimBlueprint
+			// all inherit from UBlueprint.
+			const FString AssetClassName = AssetData.AssetClass.ToString();
+			if (!AssetClassName.Contains(TEXT("Blueprint")))
+			{
+				continue;
+			}
+
+			UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+			if (!Blueprint || !Blueprint->GeneratedClass)
+			{
+				continue;
+			}
+
+			// Skip REINST_ / SKEL_ / TRASHCLASS_ synthetic classes surfaced during
+			// editor hot-reload. These aren't canonical BPs and would corrupt
+			// the reverse index if we counted them.
+			if (Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_NewerVersionExists))
+			{
+				continue;
+			}
+
+			const FString BpPath = Blueprint->GetPathName();
+			FBlueprintCppAuditBp BpEntry;
+			BpEntry.BlueprintPath = BpPath;
+
+			CppAudit::FRefAggregator Agg(ReverseIndex, SymbolMeta, BpPath);
+
+			// ---- 1. Parent class ---------------------------------------------
+			if (UClass* Parent = Blueprint->ParentClass)
+			{
+				if (CppAudit::IsNativeClass(Parent))
+				{
+					BpEntry.ParentCppClass = CppAudit::NativeClassName(Parent);
+					Agg.Record(CppAudit::NativeClassName(Parent), FString(), TEXT("ParentClass"));
+				}
+			}
+
+			// ---- 2. Native-typed member variables ----------------------------
+			for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+			{
+				if (UObject* SubObj = Var.VarType.PinSubCategoryObject.Get())
+				{
+					CppAudit::RecordPinTypeObject(Agg, SubObj);
+				}
+			}
+
+			// ---- 3. Graph walk ------------------------------------------------
+			UClass* SelfScope = Blueprint->SkeletonGeneratedClass
+				? (UClass*)Blueprint->SkeletonGeneratedClass
+				: (UClass*)Blueprint->GeneratedClass;
+
+#if WITH_EDITORONLY_DATA
+			TArray<UEdGraph*> AllGraphs;
+			AllGraphs.Append(Blueprint->FunctionGraphs);
+			AllGraphs.Append(Blueprint->UbergraphPages);
+			AllGraphs.Append(Blueprint->MacroGraphs);
+			AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
+
+			for (UEdGraph* Graph : AllGraphs)
+			{
+				if (!Graph) continue;
+
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (!Node) continue;
+
+					// --- K2Node_CallFunction: native UFUNCTION call ---
+					if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+					{
+						UFunction* Function = CallNode->GetTargetFunction();
+						if (!Function) continue;
+						UClass* OwnerClass = Function->GetOwnerClass();
+						if (!CppAudit::IsNativeClass(OwnerClass)) continue;
+						Agg.Record(
+							Function->GetName(),
+							CppAudit::NativeClassName(OwnerClass),
+							TEXT("UFUNCTION"));
+						continue;
+					}
+
+					// --- K2Node_VariableGet/Set: native UPROPERTY access ---
+					if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
+					{
+						UClass* OwnerClass = VarNode->VariableReference.GetMemberParentClass(SelfScope);
+						if (!CppAudit::IsNativeClass(OwnerClass)) continue;
+						const FName VarName = VarNode->GetVarName();
+						if (VarName.IsNone()) continue;
+						Agg.Record(
+							VarName.ToString(),
+							CppAudit::NativeClassName(OwnerClass),
+							TEXT("UPROPERTY"));
+						continue;
+					}
+
+					// --- K2Node_BaseMCDelegate: BlueprintAssignable delegate bind/call ---
+					if (UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(Node))
+					{
+						UClass* OwnerClass = DelegateNode->DelegateReference.GetMemberParentClass(SelfScope);
+						if (!CppAudit::IsNativeClass(OwnerClass)) continue;
+						const FName DelegateName = DelegateNode->DelegateReference.GetMemberName();
+						if (DelegateName.IsNone()) continue;
+						Agg.Record(
+							DelegateName.ToString(),
+							CppAudit::NativeClassName(OwnerClass),
+							TEXT("BlueprintAssignable"));
+						continue;
+					}
+
+					// --- K2Node_DynamicCast: cast to native UClass ---
+					if (UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Node))
+					{
+						UClass* Target = CastNode->TargetType;
+						if (!CppAudit::IsNativeClass(Target)) continue;
+						Agg.Record(
+							CppAudit::NativeClassName(Target),
+							FString(),
+							TEXT("UClass"));
+						continue;
+					}
+
+					// --- K2Node_MakeStruct / BreakStruct: native USTRUCT reference ---
+					if (UK2Node_MakeStruct* MakeNode = Cast<UK2Node_MakeStruct>(Node))
+					{
+						if (CppAudit::IsNativeStruct(MakeNode->StructType))
+						{
+							Agg.Record(
+								MakeNode->StructType->GetName(),
+								FString(),
+								TEXT("USTRUCT"));
+						}
+						continue;
+					}
+					if (UK2Node_BreakStruct* BreakNode = Cast<UK2Node_BreakStruct>(Node))
+					{
+						if (CppAudit::IsNativeStruct(BreakNode->StructType))
+						{
+							Agg.Record(
+								BreakNode->StructType->GetName(),
+								FString(),
+								TEXT("USTRUCT"));
+						}
+						continue;
+					}
+
+					// --- K2Node_Event: override of native BlueprintImplementable/NativeEvent ---
+					if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+					{
+						UFunction* Sig = EventNode->FindEventSignatureFunction();
+						if (!Sig) continue;
+						UClass* SigOwner = Sig->GetOwnerClass();
+						if (!CppAudit::IsNativeClass(SigOwner)) continue;
+						const TCHAR* Kind = IsBlueprintNativeEvent(Sig)
+							? TEXT("BlueprintNativeEvent")
+							: IsBlueprintImplementableEvent(Sig)
+								? TEXT("BlueprintImplementableEvent")
+								: TEXT("UFUNCTION");
+						Agg.Record(
+							Sig->GetName(),
+							CppAudit::NativeClassName(SigOwner),
+							Kind);
+						continue;
+					}
+				}
+			}
+#endif // WITH_EDITORONLY_DATA
+
+			BpEntry.References = MoveTemp(Agg.BpRefs);
+			BpEntries.Add(MoveTemp(BpEntry));
+		}
+	}
+
+	Audit.BlueprintCount = BpEntries.Num();
+
+	// Flatten reverse index into sorted Symbols array.
+	Audit.Symbols.Reserve(ReverseIndex.Num());
+	for (TPair<FString, TSet<FString>>& Pair : ReverseIndex)
+	{
+		FBlueprintCppAuditSymbol Sym;
+		const FBlueprintCppSymbolRef& Meta = SymbolMeta[Pair.Key];
+		Sym.Name = Meta.Name;
+		Sym.Owner = Meta.Owner;
+		Sym.Kind = Meta.Kind;
+		Sym.Callers = Pair.Value.Array();
+		Sym.Callers.Sort();
+		Audit.Symbols.Add(MoveTemp(Sym));
+	}
+	Audit.Symbols.Sort([](const FBlueprintCppAuditSymbol& A, const FBlueprintCppAuditSymbol& B)
+	{
+		if (A.Kind != B.Kind) return A.Kind < B.Kind;
+		if (A.Owner != B.Owner) return A.Owner < B.Owner;
+		return A.Name < B.Name;
+	});
+
+	// Sort the forward index by BlueprintPath for determinism.
+	BpEntries.Sort([](const FBlueprintCppAuditBp& A, const FBlueprintCppAuditBp& B)
+	{
+		return A.BlueprintPath < B.BlueprintPath;
+	});
+	Audit.Blueprints = MoveTemp(BpEntries);
+
+	return Audit;
 }
 
 TArray<FBlueprintReferenceData> UBlueprintExportReader::GetAssetReferencers(const FString& AssetPath, bool bIncludeSoftReferences)

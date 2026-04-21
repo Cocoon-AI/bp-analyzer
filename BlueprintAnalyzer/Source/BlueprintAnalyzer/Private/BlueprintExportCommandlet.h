@@ -105,6 +105,9 @@ public:
 	// Export reference viewer graph (bidirectional)
 	TSharedPtr<FJsonObject> ExportRefViewToJson(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly);
 
+	// Build full C++ reference audit across a search path (reverse-index of native symbols -> BP callers)
+	TSharedPtr<FJsonObject> CppAuditToJson(const TArray<FString>& SearchPaths);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);
@@ -118,6 +121,7 @@ private:
 	void FindImplementableEventImplementations(const FString& EventName, const TArray<FString>& SearchPaths);
 	void FindBlueprintsWithProperty(const FString& PropertyName, const FString& PropertyValue, const FString& ParentClassName, const TArray<FString>& SearchPaths);
 	void ExportReferenceViewer(const FString& AssetPath, int32 DependencyDepth, int32 ReferencerDepth, bool bBlueprintsOnly);
+	void BuildCppAudit(const TArray<FString>& SearchPaths);
 
 	// Output JSON to stdout or file
 	void OutputJson(const TSharedPtr<FJsonObject>& JsonObject);

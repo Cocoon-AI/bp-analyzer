@@ -541,6 +541,98 @@ struct BLUEPRINTANALYZER_API FBlueprintCppFunctionUsage
 };
 
 /**
+ * A single inline reference from a Blueprint to a C++ symbol.
+ * Used inside FBlueprintCppAuditBp to describe what a BP touches.
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintCppSymbolRef
+{
+	GENERATED_BODY()
+
+	/** Short name of the symbol. Empty Owner + Kind=UClass means Name is a class. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Name;
+
+	/** Owning native class name (without prefix). Empty when the symbol IS a class. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Owner;
+
+	/**
+	 * What kind of native symbol this is. One of:
+	 *   UClass, USTRUCT, UFUNCTION, UPROPERTY,
+	 *   BlueprintAssignable, BlueprintNativeEvent, BlueprintImplementableEvent, ParentClass
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Kind;
+};
+
+/**
+ * Reverse-index entry for a single C++ symbol: which BPs reference it.
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintCppAuditSymbol
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Name;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Owner;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Kind;
+
+	/** BP paths (e.g. /Game/Foo/BP_Bar) that reference this symbol at least once. Sorted. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FString> Callers;
+};
+
+/**
+ * Forward-index entry for a single BP: parent class + every native symbol it touches.
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintCppAuditBp
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString BlueprintPath;
+
+	/** The native parent class the BP inherits from, if any. Empty if parent is itself a BP. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString ParentCppClass;
+
+	/** Every distinct native symbol this BP references (order-preserving, deduped). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FBlueprintCppSymbolRef> References;
+};
+
+/**
+ * Full C++ reference audit across a search path. Populated by
+ * UBlueprintExportReader::BuildCppReferenceAudit.
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintCppAudit
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FString> SearchPaths;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	int32 BlueprintCount = 0;
+
+	/** Reverse index: symbol -> BPs that reference it. Sorted by (Kind, Owner, Name). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FBlueprintCppAuditSymbol> Symbols;
+
+	/** Forward index: BP -> symbols it touches. Sorted by BlueprintPath. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FBlueprintCppAuditBp> Blueprints;
+};
+
+/**
  * Search hit from a Find-in-Blueprints style text search
  */
 USTRUCT(BlueprintType)
