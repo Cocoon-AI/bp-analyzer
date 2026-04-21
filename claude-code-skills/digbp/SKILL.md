@@ -1,6 +1,6 @@
 ---
 name: digbp
-description: Analyze and edit Unreal Engine Blueprints via the digbp persistent server. Use when the user asks to inspect, export, search, understand, or MUTATE Blueprints — including editing variables, functions, components, nodes, and pin connections, reparenting, implementing interfaces, compiling, and saving. Also handles finding function callers, native events, asset references, and generating C++ migration stubs.
+description: Analyze and edit Unreal Engine Blueprints via the digbp persistent server. Use when the user asks to inspect, export, search, understand, or MUTATE Blueprints — including editing variables, functions, components, nodes, and pin connections, reparenting, implementing interfaces, compiling, and saving. Also handles finding function callers, variable get/set sites, native events, asset references, generating C++ migration stubs, **auditing which BPs reference a C++ symbol before deletion (cpp-audit)**, **generating C++ UPROPERTY declarations from BP metadata (cppgen upropertys)**, and the **BP→C++ variable lift workflow** (edit variable lift / unshadow for recovery from the shadow-rename trap).
 allowed-tools: Bash
 argument-hint: "[command] [--flags]"
 ---
@@ -91,6 +91,19 @@ digbp findcallers --dir=/Game/ --func=GetPlayerController
 digbp findcallers --dir=/Game/ --func=GetPlayerController --class=UGameplayStatics
 ```
 
+### Find Variable Get/Set Sites
+
+```bash
+# All K2Node_VariableGet / K2Node_VariableSet sites
+digbp findvaruses --dir=/Game/ --var=Health
+
+# Restrict to read-only or write-only access
+digbp findvaruses --dir=/Game/ --var=Health --kind=get
+digbp findvaruses --dir=/Game/ --var=Health --kind=set
+```
+
+Inherited UPROPERTYs (accessed via self-scope refs in child BPs) resolve correctly to their native parent class — results include the `variable_class` field so you can tell which class actually owns the var.
+
 ### Find Event Implementations
 
 ```bash
@@ -107,6 +120,41 @@ digbp findevents --dir=/Game/ --event=ReceiveBeginPlay
 digbp findprop --dir=/Game/ --prop=bCanBeDamaged --value=true
 digbp findprop --dir=/Game/ --prop=bCanBeDamaged --parentclass=APawn
 ```
+
+### C++ Reference Audit (pre-deletion safety check)
+
+Before deleting a C++ class, function, delegate, struct, or UPROPERTY, run `cpp-audit` to find every Blueprint that references it. Walks parent class, `K2Node_CallFunction`, `VariableGet/Set`, `BaseMCDelegate` subclasses (delegate bind/call), `DynamicCast`, `Make/BreakStruct`, native event overrides, and BP member-variable types.
+
+```bash
+digbp cpp-audit --dir=/Game/                     # reverse-index to stdout
+digbp cpp-audit --dir=/Game/ --out=cpp-refs.json # or to a file (recommended for large trees)
+digbp cpp-audit --dir=/Game/Showdown/ --pretty   # scoped + readable
+```
+
+Output shape:
+- `symbols[]` — reverse index. Each entry: `{name, owner, kind, callers[], caller_count}`. `kind` is one of `ParentClass`, `UClass`, `USTRUCT`, `UFUNCTION`, `UPROPERTY`, `BlueprintAssignable`, `BlueprintNativeEvent`, `BlueprintImplementableEvent`.
+- `bps[]` — forward index. Each entry: `{blueprint_path, parent_cpp_class, references[]}` where each reference is `{name, owner, kind}`.
+
+Common use: `jq '.symbols[] | select(.name == "SomeClassOrFunction")'` to find all BPs that would break if it's removed. Includes *dormant* references (unused member-var fields) that grep-over-C++ won't catch.
+
+### Generate C++ UPROPERTY Declarations
+
+```bash
+# All BP variables + dispatchers as C++ UPROPERTY lines
+digbp cppgen upropertys --path=/Game/UI/MyPanel_BP
+
+# Filter + override category
+digbp cppgen upropertys --path=/Game/UI/MyPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady" \
+    --category="MyPanel"
+
+# Preserve raw BP names verbatim (produces invalid C++ if names contain spaces)
+digbp cppgen upropertys --path=/Game/UI/MyPanel_BP --raw-names
+```
+
+Output is in the `code` field of the response — a single string with `DECLARE_DYNAMIC_MULTICAST_DELEGATE_N(...)` macros (belong above the UCLASS) followed by `UPROPERTY(...)` lines (belong inside the class body). By default, BP names are transformed into C++-friendly identifiers (`"Current Level"` → `CurrentLevel`) — the same rule `edit variable lift` applies, so the two commands stay in sync.
+
+Dispatcher UPROPERTYs always get **both** `BlueprintAssignable` and `BlueprintCallable`. Omitting `BlueprintCallable` compiles fine but causes `K2Node_CallDelegate` nodes in Blueprint to fail with *"Event Dispatcher is not BlueprintCallable"* at compile time.
 
 ## Editing Blueprints (`digbp edit ...`)
 
@@ -157,6 +205,20 @@ digbp edit variable set-type      --path=/Game/BP_Foo --name=Target --type=objec
 digbp edit variable set-default   --path=/Game/BP_Foo --name=Health --value=75
 digbp edit variable set-flags     --path=/Game/BP_Foo --name=Health --replicated --replication-condition=OwnerOnly
 digbp edit variable set-metadata  --path=/Game/BP_Foo --name=Health --key=tooltip --value="Current health"
+
+# Atomic multi-var rename-to-C++-friendly + remove (BP→C++ lift step 3).
+# Input names are raw BP names (with spaces). Final names are stripped +
+# PascalCased: "XP Level Threshold" → "XPLevelThreshold". Dry-run preview first.
+digbp edit variable lift --path=/Game/BP_Foo \
+    --vars="XP Level Threshold,Current XP,OnReady" --dry-run
+digbp edit variable lift --path=/Game/BP_Foo \
+    --vars="XP Level Threshold,Current XP,OnReady"
+
+# Recovery from the "<X>_0 shadow" trap: when a C++ UPROPERTY is added to the
+# parent class BEFORE the BP var is removed, UE renames the BP var to <X>_0
+# and retargets K2Node_VariableGet/Set + delegate nodes. Undo that:
+digbp edit variable unshadow --path=/Game/BP_Foo --dry-run   # idempotent preview
+digbp edit variable unshadow --path=/Game/BP_Foo
 ```
 
 ### CDO Properties (parent-class defaults)
@@ -294,6 +356,45 @@ digbp edit pin set-default --path=/Game/BP_Foo --graph=IsAlive \
 # 5. Commit
 digbp edit save-and-compile --path=/Game/BP_Foo
 ```
+
+### Worked Example: BP→C++ Variable Lift
+
+Lifting BP-defined member variables into C++ UPROPERTYs on a parent class. The order matters — do it out of order and you hit the `<X>_0` shadow trap (see unshadow below for recovery).
+
+```bash
+# 1. Preview the lift. Names transform to C++ identifiers (strip spaces, PascalCase).
+#    --vars uses the RAW BP names (with spaces) regardless of transform.
+digbp edit variable lift --path=/Game/UI/SDAccountInfoPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady" --dry-run --pretty
+# response.lifted[].final_name = ["CurrentXP", "XPLevelThreshold", "OnReady"]
+
+# 2. Generate the matching C++ UPROPERTY block. Same --vars list. Same name
+#    transform — so the emitted C++ agrees with what lift will produce.
+digbp cppgen upropertys --path=/Game/UI/SDAccountInfoPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady" \
+    --category="AccountInfoPanel" --pretty
+
+# 3. HUMAN STEP: paste response.code into the parent .h (DECLARE macros above
+#    the UCLASS, UPROPERTY block inside it), rebuild the plugin, restart the
+#    UE4 server (digbp stop && digbp start) so it picks up the new UPROPERTYs.
+
+# 4. Atomic rename + remove. K2Node_VariableGet/Set refs auto-retarget to the
+#    now-inherited parent properties.
+digbp edit variable lift --path=/Game/UI/SDAccountInfoPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady"
+digbp edit save-and-compile --path=/Game/UI/SDAccountInfoPanel_BP
+```
+
+**If you skip step 3 or do step 4 first**, UE shadow-renames the colliding BP vars to `<X>_0` and retargets every K2Node_VariableGet/Set/BaseMCDelegate node. The `.uasset` now has `CurrentXP_0` variables and nodes pointing at them. Recover with:
+
+```bash
+digbp edit variable unshadow --path=/Game/UI/SDAccountInfoPanel_BP --dry-run
+# response.shadows_detected = [{shadow_name: "CurrentXP_0", parent_name: "CurrentXP"}, ...]
+digbp edit variable unshadow --path=/Game/UI/SDAccountInfoPanel_BP
+digbp edit save-and-compile --path=/Game/UI/SDAccountInfoPanel_BP
+```
+
+Idempotent: running on an already-clean BP reports zero actions.
 
 ### Common Failure Modes
 

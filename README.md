@@ -6,9 +6,11 @@ UE4.27 Editor plugin providing a CLI commandlet for Blueprint analysis and editi
 
 - **Export Blueprints** in three formats: compact pseudocode, full JSON, or C++ migration skeleton
 - **Analyze C++ usage** - find all C++ function calls within a Blueprint
+- **C++ reference audit** - reverse-index of every native symbol (UClass/UFUNCTION/UPROPERTY/USTRUCT/BlueprintAssignable/event override) referenced by any Blueprint in a directory; use before deleting C++ to find BPs that will break
 - **Text search** - find-in-blueprints style search across node titles, comments, pin names/defaults, variable names
-- **Search capabilities** - find Blueprints calling specific functions, implementing events, or with specific property values
+- **Search capabilities** - find Blueprints calling specific functions, reading/writing specific variables, implementing events, or with specific property values
 - **Edit Blueprints** - add/remove/modify variables, functions, events, dispatchers, nodes, and components via JSON-RPC
+- **BP→C++ variable lift** - atomic multi-var rename-to-C++-friendly + remove (`edit variable lift`); recover from the `<X>_0` shadow-rename trap (`edit variable unshadow`); generate ready-to-paste UPROPERTY declarations (`cppgen upropertys`) — three commands that together collapse the BP→C++ lift workflow
 - **Cleanup tools** - detect and remove broken-type nodes/variables, purge phantom properties from compiled classes
 - **Dependency analysis** - export asset references, dependency graphs, and bidirectional reference viewer
 - **Complexity metrics** - node counts, connection counts, and complexity scores
@@ -94,10 +96,13 @@ digbp stop        # Shutdown server
 | `digbp graph` | Export dependency graph | `--path` |
 | `digbp refview` | Bidirectional reference viewer | `--path` |
 | `digbp findcallers` | Find Blueprints calling a function | `--dir`, `--func` |
+| `digbp findvaruses` | Find Blueprints reading/writing a variable | `--dir`, `--var` |
 | `digbp nativeevents` | Find native event implementations | `--dir` |
 | `digbp findevents` | Find implementable event implementations | `--dir`, `--event` |
 | `digbp findprop` | Find Blueprints by CDO property | `--dir`, `--prop` |
 | `digbp search` | Text search across Blueprints | `--dir`, `--query` |
+| `digbp cpp-audit` | Reverse-index of every native C++ symbol referenced by any BP under `--dir` | `--dir` |
+| `digbp cppgen upropertys` | Emit C++ UPROPERTY declarations from BP variables + dispatchers | `--path` |
 | `digbp edit` | Mutate Blueprints (see below) | varies |
 
 ### Edit Commands
@@ -111,6 +116,8 @@ digbp stop        # Shutdown server
 | `digbp edit variable add` | Add a member variable |
 | `digbp edit variable remove` | Remove a variable (`--force` for broken types) |
 | `digbp edit variable rename` | Rename a variable |
+| `digbp edit variable unshadow` | Retarget `<X>_0` shadow refs back to parent `<X>`, remove shadow vars (`--dry-run`) |
+| `digbp edit variable lift` | Atomic multi-var rename-to-C++-friendly + remove (`--vars="A,B,C"`, `--dry-run`) |
 | `digbp edit function add` | Add a function graph |
 | `digbp edit function remove` | Remove a function |
 | `digbp edit event add-custom` | Add a custom event |
@@ -234,6 +241,57 @@ void AMyGameMode_BP::StartGame()
 }
 ```
 
+## BP→C++ Variable Lift Workflow
+
+Lifting Blueprint-defined member variables into C++ UPROPERTYs on the parent class used to be an ordered 15-step dance where any slip required a `p4 revert`. Three commands collapse it:
+
+**1. Generate the C++ block.** `cppgen upropertys` reads the BP's variables + event dispatchers and emits ready-to-paste C++. Names are automatically transformed to valid identifiers (`"Current Level"` → `CurrentLevel`) — the same transform `lift` uses internally, so the two commands agree on the final name.
+
+```bash
+digbp cppgen upropertys --path=/Game/UI/SDAccountInfoPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady" \
+    --category="AccountInfoPanel"
+```
+
+Output includes `DECLARE_DYNAMIC_MULTICAST_DELEGATE_N(...)` macros for dispatchers (placed above the UCLASS) and `UPROPERTY(...)` declarations for the class body. Dispatchers always get **both** `BlueprintAssignable` and `BlueprintCallable` — the latter is what makes `K2Node_CallDelegate` nodes compile.
+
+**2. Paste into the parent header, then rebuild the plugin.** Normal workflow, outside `digbp`.
+
+**3. Atomically lift the BP vars.** After the parent class has the new UPROPERTYs, `edit variable lift` renames each BP var to the C++-friendly name and removes it, under a single save. The K2Node references in the BP graphs automatically retarget to the inherited parent property.
+
+```bash
+digbp edit variable lift --path=/Game/UI/SDAccountInfoPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady" --dry-run   # preview
+digbp edit variable lift --path=/Game/UI/SDAccountInfoPanel_BP \
+    --vars="Current XP,XP Level Threshold,OnReady"             # apply
+digbp edit save-and-compile --path=/Game/UI/SDAccountInfoPanel_BP
+```
+
+### Recovery: the `<X>_0` shadow trap
+
+If you add the C++ UPROPERTY **before** removing the BP var (out-of-order), UE silently renames the BP var to `<X>_0` and retargets every `K2Node_VariableGet/Set` + delegate node to the `_0` name. That rewrite is persisted into the `.uasset`. Without tooling, the only recovery used to be `p4 revert`.
+
+`edit variable unshadow` reverses it:
+
+```bash
+digbp edit variable unshadow --path=/Game/UI/SDAccountInfoPanel_BP --dry-run
+digbp edit variable unshadow --path=/Game/UI/SDAccountInfoPanel_BP
+```
+
+Idempotent — running on an already-clean BP reports zero actions and success.
+
+### C++ reference audit
+
+Before deleting a C++ class, function, delegate, struct, or property, check who's using it:
+
+```bash
+digbp cpp-audit --dir=/Game/ --out=cpp-refs.json
+```
+
+Returns a reverse index: every native symbol referenced by any BP under `/Game/`, with the list of BP callers. Walks parent class, `K2Node_CallFunction`, `VariableGet/Set`, `BaseMCDelegate` subclasses (delegate bind/call), `DynamicCast`, `Make/BreakStruct`, native event overrides, and BP member variables whose type resolves to a native UClass/UScriptStruct.
+
+This exists specifically to catch dormant references that `grep` for C++ callers misses — e.g. a BP member variable typed `USomeSubsystem*` with no active read/write will silently nullify when the C++ class is deleted, not produce a compile error.
+
 ## Commandlet Reference
 
 ### Basic Operations
@@ -279,6 +337,8 @@ void AMyGameMode_BP::StartGame()
 | `-dir=/Game/ -findprop=PropertyName` | Find Blueprints with a CDO property |
 | `-dir=/Game/ -findprop=Name -propvalue=Value` | Filter by property value |
 | `-dir=/Game/ -findprop=Name -parentclass=Class` | Filter by parent class |
+| `-dir=/Game/ -var=VariableName` | Find K2Node_VariableGet/Set sites (optionally `-varkind=get\|set`) |
+| `-dir=/Game/ -cppaudit` | Reverse-index of native C++ symbols referenced by BPs |
 
 ## Architecture
 
