@@ -199,23 +199,33 @@ Use --dry-run to preview without mutating.`,
 
 func editVariableLiftCmd() *cobra.Command {
 	var (
-		path   string
-		vars   string
-		dryRun bool
+		path            string
+		vars            string
+		scope           string
+		dryRun          bool
+		noScanExternal  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "lift",
-		Short: "Atomic multi-var lift: rename each var to a C++-friendly name, then remove",
+		Short: "Atomic multi-var lift: rename each var to a C++-friendly name, then remove, and retarget external BP callers",
 		Long: `For each comma-separated var, renames to a C++-identifier-friendly form
 (strips spaces, uppercases the first letter of each whitespace-separated
 segment; "XP Level Threshold" → "XPLevelThreshold") and then removes the
 variable. Collapses the first three steps of the BP→C++ lift workflow into
 one atomic call.
 
+External-BP retargeting (default ON): after the rename+remove, scans --scope
+for K2Node_VariableGet/Set in OTHER BPs that bound against the pre-rename
+name on this BP's class, retargets them to the new name, marks the affected
+BPs structurally modified, and saves them. Without this, external callers
+silently orphan when the BP loses the old var name. Use --no-scan-external
+to skip the scan (fast, but you should verify zero external refs with
+'digbp findvaruses --var=<OldName>' first).
+
 Reports final names, any requested vars that weren't found (with the list
-of available vars for fuzzy matching client-side), and any target-name
-collisions. Does not compile — caller compiles separately after writing the
-replacement C++ UPROPERTYs.`,
+of available vars for fuzzy matching client-side), any target-name
+collisions, and the count of external BPs retargeted. Does not compile —
+caller compiles separately after writing the replacement C++ UPROPERTYs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Split + trim the user-supplied CSV. Keeps spaces inside var names
 			// (e.g. "XP Level Threshold") intact.
@@ -234,12 +244,30 @@ replacement C++ UPROPERTYs.`,
 			if dryRun {
 				params["dry_run"] = true
 			}
+			if noScanExternal {
+				params["no_scan_external"] = true
+			}
+			if scope != "" {
+				scopeParts := strings.Split(scope, ",")
+				scopeTrimmed := make([]string, 0, len(scopeParts))
+				for _, s := range scopeParts {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						scopeTrimmed = append(scopeTrimmed, s)
+					}
+				}
+				if len(scopeTrimmed) > 0 {
+					params["scope"] = scopeTrimmed
+				}
+			}
 			return callServer("edit.variable.lift", params)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
 	cmd.Flags().StringVar(&vars, "vars", "", `Comma-separated BP variable names to lift, e.g. --vars="XP Level Threshold,Current XP,Beta XP Key" (required)`)
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report the plan without mutating the BP")
+	cmd.Flags().StringVar(&scope, "scope", "", "Comma-separated paths to scan for external BP callers (default: /Game/)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report the plan without mutating the BP (also skips the external-BP scan)")
+	cmd.Flags().BoolVar(&noScanExternal, "no-scan-external", false, "Skip scanning OTHER BPs for K2Node refs to retarget (default: scan is ON)")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("vars")
 	return cmd

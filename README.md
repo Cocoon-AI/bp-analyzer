@@ -117,7 +117,7 @@ digbp stop        # Shutdown server
 | `digbp edit variable remove` | Remove a variable (`--force` for broken types) |
 | `digbp edit variable rename` | Rename a variable |
 | `digbp edit variable unshadow` | Retarget `<X>_0` shadow refs back to parent `<X>`, remove shadow vars (`--dry-run`) |
-| `digbp edit variable lift` | Atomic multi-var rename-to-C++-friendly + remove (`--vars="A,B,C"`, `--dry-run`) |
+| `digbp edit variable lift` | Atomic multi-var rename-to-C++-friendly + remove, with external-BP K2Node retargeting (`--vars="A,B,C"`, `--scope=/Game/UI/`, `--no-scan-external`, `--dry-run`) |
 | `digbp edit function add` | Add a function graph |
 | `digbp edit function remove` | Remove a function |
 | `digbp edit event add-custom` | Add a custom event |

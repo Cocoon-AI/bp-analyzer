@@ -189,6 +189,18 @@ struct BLUEPRINTANALYZER_API FBlueprintVariableData
 	/** True when the variable's type references a class/struct that no longer exists. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	bool bIsTypeBroken = false;
+
+	/**
+	 * Blueprint variable metadata as a flat Key->Value map. Mirrors
+	 * FBPVariableDescription::MetaDataArray. Includes ExposeOnSpawn, Category,
+	 * Tooltip, EditCondition, UIMin/UIMax, ClampMin/ClampMax, and any custom
+	 * keys the BP author set. Consumed by cppgen so the emitted UPROPERTY
+	 * preserves specifiers the BP pins or editor UI depend on — ExposeOnSpawn
+	 * in particular MUST survive the lift or K2Node_CreateWidget callers
+	 * silently orphan their exposed pins (gamedev CL 15941 regression).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TMap<FString, FString> MetaData;
 };
 
 /**

@@ -255,6 +255,52 @@ static FString BPTypeToCppTypeRich(const FString& BPType)
 	return T;
 }
 
+// cppgen: build a meta=(Key="Value", ...) specifier from a BP variable's meta map.
+// Returns an empty string if the map is empty. Skips keys that cppgen already
+// handles on its own (Category — the explicit Category= override; tooltip —
+// we don't want to spam UPROPERTY lines with multi-line docstrings; DisplayName
+// when it would match the emitted identifier). Quotes/backslashes in values
+// are escaped so the generated C++ compiles.
+static FString CppGen_MetaBlock(const TMap<FString, FString>& MetaData, const FString& EmittedName)
+{
+	if (MetaData.Num() == 0)
+	{
+		return FString();
+	}
+
+	// Keys cppgen handles via dedicated specifiers / intentionally drops. Case
+	// -insensitive match against UE's canonical meta key names.
+	static const TSet<FString> Excluded = {
+		TEXT("Category"),   // emitted as Category="..." specifier
+		TEXT("tooltip"),    // lives in the // comment / multi-line context; skip
+	};
+
+	TArray<FString> Pairs;
+	for (const TPair<FString, FString>& P : MetaData)
+	{
+		if (Excluded.Contains(P.Key)) { continue; }
+
+		// DisplayName that just restates the identifier is noise — drop it.
+		if (P.Key.Equals(TEXT("DisplayName"), ESearchCase::IgnoreCase) && P.Value.Equals(EmittedName, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		// Escape \ and " for safe embedding in a C++ string literal.
+		FString Escaped = P.Value;
+		Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+		Escaped.ReplaceInline(TEXT("\""), TEXT("\\\""));
+
+		Pairs.Add(FString::Printf(TEXT("%s=\"%s\""), *P.Key, *Escaped));
+	}
+	if (Pairs.Num() == 0)
+	{
+		return FString();
+	}
+	Pairs.Sort();
+	return FString::Printf(TEXT("meta=(%s)"), *FString::Join(Pairs, TEXT(", ")));
+}
+
 // Pick the correct DECLARE_DYNAMIC_MULTICAST_DELEGATE macro suffix for N params.
 // UE4.27 provides OneParam through NineParams; 0 params is the no-suffix macro.
 static FString DelegateMacroForArity(int32 ParamCount)
@@ -944,11 +990,21 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const
 		}
 
 		const FString CppType = BPTypeToCppTypeRich(Var.VariableType);
+		const FString EmittedName = bRawNames ? Var.VariableName : CppGen_ToCppIdentifier(Var.VariableName);
 
 		TArray<FString> Specifiers;
 		Specifiers.Add(Var.bIsPublic ? TEXT("BlueprintReadWrite") : TEXT("BlueprintReadOnly"));
 		if (Var.bIsReplicated) { Specifiers.Add(TEXT("Replicated")); }
 		Specifiers.Add(FString::Printf(TEXT("Category = \"%s\""), *PickCategory(Var.Category)));
+
+		// Preserve BP meta — ExposeOnSpawn especially. Without this, external BPs
+		// that set the var as a K2Node_CreateWidget exposed pin orphan silently
+		// when the BP is lifted (gamedev's CL 15941 regression).
+		const FString MetaSpecifier = CppGen_MetaBlock(Var.MetaData, EmittedName);
+		if (!MetaSpecifier.IsEmpty())
+		{
+			Specifiers.Add(MetaSpecifier);
+		}
 
 		UPropBlock += FString::Printf(TEXT("UPROPERTY(%s)\n"), *FString::Join(Specifiers, TEXT(", ")));
 
@@ -968,7 +1024,6 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const
 				DefaultSuffix = FString::Printf(TEXT(" = %s"), *Var.DefaultValue);
 			}
 		}
-		const FString EmittedName = bRawNames ? Var.VariableName : CppGen_ToCppIdentifier(Var.VariableName);
 		UPropBlock += FString::Printf(TEXT("%s %s%s;\n\n"), *CppType, *EmittedName, *DefaultSuffix);
 		++VarCount;
 	}

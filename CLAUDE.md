@@ -181,8 +181,10 @@ digbp edit variable remove --path=/Game/BP --name=Broken --force  # Force-remove
 digbp edit variable rename --path=/Game/BP --old-name=Hp --new-name=Health
 digbp edit variable unshadow --path=/Game/BP --dry-run            # Retarget <X>_0 shadow refs → <X>
 digbp edit variable unshadow --path=/Game/BP                      # Apply
-digbp edit variable lift --path=/Game/BP --vars="Current XP,XP Level Threshold"  # Rename-to-CPP-friendly + remove (atomic)
+digbp edit variable lift --path=/Game/BP --vars="Current XP,XP Level Threshold"  # Rename-to-CPP-friendly + remove + retarget external BPs (atomic)
 digbp edit variable lift --path=/Game/BP --vars="..." --dry-run
+digbp edit variable lift --path=/Game/BP --vars="..." --scope=/Game/UI/         # Narrow external-BP scan
+digbp edit variable lift --path=/Game/BP --vars="..." --no-scan-external        # Skip external scan (verify with findvaruses first)
 digbp edit variable set-type --path=/Game/BP --name=Health --type=int
 digbp edit variable set-default --path=/Game/BP --name=Health --value=100
 digbp edit variable set-flags --path=/Game/BP --name=Health --public --replicated

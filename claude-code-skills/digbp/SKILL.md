@@ -156,6 +156,8 @@ Output is in the `code` field of the response — a single string with `DECLARE_
 
 Dispatcher UPROPERTYs always get **both** `BlueprintAssignable` and `BlueprintCallable`. Omitting `BlueprintCallable` compiles fine but causes `K2Node_CallDelegate` nodes in Blueprint to fail with *"Event Dispatcher is not BlueprintCallable"* at compile time.
 
+**BP variable metadata is preserved** — `ExposeOnSpawn`, `UIMin/UIMax`, `ClampMin/ClampMax`, `EditCondition`, `BlueprintBaseOnly`, and any custom keys the BP author set are emitted as `meta=(Key="Value", ...)` on the generated UPROPERTY. Critical for `ExposeOnSpawn`: without it, external BPs that bound the lifted var as a `K2Node_CreateWidget` exposed pin silently orphan after the lift.
+
 ## Editing Blueprints (`digbp edit ...`)
 
 All mutation commands live under `digbp edit`. They share a core discipline:
@@ -209,10 +211,20 @@ digbp edit variable set-metadata  --path=/Game/BP_Foo --name=Health --key=toolti
 # Atomic multi-var rename-to-C++-friendly + remove (BP→C++ lift step 3).
 # Input names are raw BP names (with spaces). Final names are stripped +
 # PascalCased: "XP Level Threshold" → "XPLevelThreshold". Dry-run preview first.
+#
+# External-BP retargeting is ON by default: after the rename+remove, lift scans
+# --scope (default /Game/) for K2Node_VariableGet/Set in OTHER BPs that bound
+# against the pre-rename name on this BP's class, retargets them, and saves
+# the affected BPs. Without this, a rename silently orphans cross-BP callers.
+# Use --no-scan-external to skip; verify with 'findvaruses --var=<OldName>' first.
 digbp edit variable lift --path=/Game/BP_Foo \
     --vars="XP Level Threshold,Current XP,OnReady" --dry-run
 digbp edit variable lift --path=/Game/BP_Foo \
     --vars="XP Level Threshold,Current XP,OnReady"
+digbp edit variable lift --path=/Game/BP_Foo \
+    --vars="..." --scope=/Game/UI/                # narrow external scan
+digbp edit variable lift --path=/Game/BP_Foo \
+    --vars="..." --no-scan-external               # skip scan entirely (advanced)
 
 # Recovery from the "<X>_0 shadow" trap: when a C++ UPROPERTY is added to the
 # parent class BEFORE the BP var is removed, UE renames the BP var to <X>_0

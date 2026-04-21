@@ -366,6 +366,15 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 			VarData.ToolTip = Var.MetaDataArray[TooltipIndex].DataValue;
 		}
 
+		// Copy the full meta array. cppgen needs ExposeOnSpawn, Category overrides,
+		// UIMin/UIMax, EditCondition, BlueprintBaseOnly, and any custom keys to
+		// round-trip into the generated C++ UPROPERTY. Keys are serialized as-is
+		// (FName -> FString); values stay verbatim so quoted strings survive.
+		for (const FBPVariableMetaDataEntry& Entry : Var.MetaDataArray)
+		{
+			VarData.MetaData.Add(Entry.DataKey.ToString(), Entry.DataValue);
+		}
+
 		ExportData.Variables.Add(VarData);
 	}
 

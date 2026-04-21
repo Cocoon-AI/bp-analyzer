@@ -19,6 +19,9 @@
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "FileHelpers.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -428,6 +431,16 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableUnshadow(const TSharedPtr<FJs
 	AllGraphs.Append(Blueprint->MacroGraphs);
 	AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
 
+	// Recurse into SubGraphs: collapsed-to-function nodes and nested composites
+	// hold their body graphs in UEdGraph::SubGraphs, not at the BP top-level.
+	// Previously these were missed — a gamedev report on 2026-04-21 saw 3
+	// K2Node_VariableGet nodes skipped inside function-graph subgraphs.
+	for (int32 i = 0; i < AllGraphs.Num(); ++i)
+	{
+		if (!AllGraphs[i]) { continue; }
+		AllGraphs.Append(AllGraphs[i]->SubGraphs);
+	}
+
 	for (UEdGraph* Graph : AllGraphs)
 	{
 		if (!Graph) continue;
@@ -539,6 +552,120 @@ namespace LiftHelpers
 		}
 		return Out;
 	}
+
+	// Walk every loaded BP under SearchPaths and retarget K2Node_VariableGet/Set
+	// that reference the lifted BP's (OldName, *Class) via MemberReference.
+	// External callers were bound to the PRE-rename name; without this, their
+	// pins orphan silently once the lifted BP loses the old name.
+	//
+	// Rewrites the member name to NewName (keeping the BP class as the parent,
+	// so FMemberReference resolution walks to the C++ parent chain where the
+	// new UPROPERTY now lives). Marks affected BPs structurally modified and
+	// collects their packages for batch save.
+	struct FExternalRetargetStats
+	{
+		int32 NodesRetargeted = 0;
+		TArray<FString> AffectedBpPaths;
+	};
+
+	static FExternalRetargetStats RetargetExternalVarRefs(
+		UBlueprint* LiftedBlueprint,
+		const TMap<FName, FName>& RenameMap,
+		const TArray<FString>& SearchPaths,
+		TArray<UPackage*>& OutPackagesToSave)
+	{
+		FExternalRetargetStats Stats;
+		if (RenameMap.Num() == 0 || SearchPaths.Num() == 0 || !LiftedBlueprint || !LiftedBlueprint->GeneratedClass)
+		{
+			return Stats;
+		}
+
+		UClass* LiftedClass = LiftedBlueprint->GeneratedClass;
+		UClass* LiftedSkelClass = LiftedBlueprint->SkeletonGeneratedClass;
+
+		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AR = ARM.Get();
+
+		for (const FString& SearchPath : SearchPaths)
+		{
+			TArray<FAssetData> Assets;
+			AR.GetAssetsByPath(FName(*SearchPath), Assets, /*bRecursive=*/true);
+
+			for (const FAssetData& Data : Assets)
+			{
+				if (!Data.AssetClass.ToString().Contains(TEXT("Blueprint")))
+				{
+					continue;
+				}
+
+				UBlueprint* BP = Cast<UBlueprint>(Data.GetAsset());
+				if (!BP || !BP->GeneratedClass) { continue; }
+				if (BP->GeneratedClass->HasAnyClassFlags(CLASS_NewerVersionExists)) { continue; }
+				if (BP == LiftedBlueprint) { continue; } // lifted BP's internal retarget handled by RenameMemberVariable
+
+				bool bAnyChange = false;
+
+#if WITH_EDITORONLY_DATA
+				TArray<UEdGraph*> AllGraphs;
+				AllGraphs.Append(BP->FunctionGraphs);
+				AllGraphs.Append(BP->UbergraphPages);
+				AllGraphs.Append(BP->MacroGraphs);
+				AllGraphs.Append(BP->DelegateSignatureGraphs);
+
+				// Recurse into SubGraphs so collapsed-to-function nodes + nested
+				// composites don't hide K2Node_Variable refs from the walk.
+				for (int32 i = 0; i < AllGraphs.Num(); ++i)
+				{
+					if (!AllGraphs[i]) { continue; }
+					AllGraphs.Append(AllGraphs[i]->SubGraphs);
+				}
+
+				for (UEdGraph* Graph : AllGraphs)
+				{
+					if (!Graph) { continue; }
+					for (UEdGraphNode* Node : Graph->Nodes)
+					{
+						UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node);
+						if (!VarNode) { continue; }
+
+						const FName CurName = VarNode->VariableReference.GetMemberName();
+						const FName* NewName = RenameMap.Find(CurName);
+						if (!NewName) { continue; }
+
+						// Only retarget refs that point AT the lifted BP's class
+						// (or its skeleton). Other BPs with same-named vars are
+						// not ours to touch.
+						UClass* RefParent = VarNode->VariableReference.GetMemberParentClass(BP->SkeletonGeneratedClass);
+						const bool bIsRefToLifted =
+							RefParent == LiftedClass ||
+							RefParent == LiftedSkelClass ||
+							(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
+						if (!bIsRefToLifted) { continue; }
+
+						// Keep MemberParentClass = LiftedClass so name resolution
+						// walks the parent chain to the new C++ UPROPERTY.
+						VarNode->VariableReference.SetExternalMember(*NewName, LiftedClass);
+						VarNode->ReconstructNode();
+						++Stats.NodesRetargeted;
+						bAnyChange = true;
+					}
+				}
+#endif // WITH_EDITORONLY_DATA
+
+				if (bAnyChange)
+				{
+					FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+					Stats.AffectedBpPaths.Add(BP->GetPathName());
+					if (UPackage* Pkg = BP->GetOutermost())
+					{
+						OutPackagesToSave.AddUnique(Pkg);
+					}
+				}
+			}
+		}
+
+		return Stats;
+	}
 }
 
 TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonObject>& Params)
@@ -557,6 +684,29 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	bool bDryRun = false;
 	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
 
+	// External-BP retargeting: default ON. A rename step breaks K2Node_Variable
+	// refs in other BPs that bound against the pre-rename name; without a scan
+	// they orphan silently. `no_scan_external` is the escape hatch for callers
+	// who've already verified there are no cross-BP references.
+	bool bNoScanExternal = false;
+	Params->TryGetBoolField(TEXT("no_scan_external"), bNoScanExternal);
+
+	// Scope for the external scan. Default /Game/ covers the whole project;
+	// narrow it for speed on large trees. Only consulted if !bNoScanExternal.
+	TArray<FString> ExternalSearchPaths;
+	const TArray<TSharedPtr<FJsonValue>>* ScopeArray = nullptr;
+	if (Params->TryGetArrayField(TEXT("scope"), ScopeArray) && ScopeArray)
+	{
+		for (const TSharedPtr<FJsonValue>& V : *ScopeArray)
+		{
+			ExternalSearchPaths.Add(V->AsString());
+		}
+	}
+	if (ExternalSearchPaths.Num() == 0)
+	{
+		ExternalSearchPaths.Add(TEXT("/Game/"));
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
 	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
@@ -572,6 +722,10 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	TArray<TSharedPtr<FJsonValue>> MissingJson;
 	int32 Renamed = 0;
 	int32 Removed = 0;
+
+	// OldName -> NewName for every var that's actually being renamed. Used to
+	// drive the external BP scan once the local lift is done.
+	TMap<FName, FName> RenameMap;
 
 	for (const TSharedPtr<FJsonValue>& Val : *VarsArray)
 	{
@@ -612,6 +766,11 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 		LiftItem->SetStringField(TEXT("final_name"), FinalStr);
 		LiftItem->SetBoolField(TEXT("renamed"), bNeedsRename);
 
+		if (bNeedsRename)
+		{
+			RenameMap.Add(CurName, FinalName);
+		}
+
 		if (!bDryRun)
 		{
 			if (bNeedsRename)
@@ -625,12 +784,83 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 		LiftedJson.Add(MakeShareable(new FJsonValueObject(LiftItem)));
 	}
 
+	// External BP retargeting. Only needed when at least one var was renamed —
+	// same-name removes leave external FMember refs pointing at a name that
+	// (now) lives on the C++ parent class, so name resolution still succeeds.
+	int32 ExternalNodesRetargeted = 0;
+	TArray<TSharedPtr<FJsonValue>> AffectedBpsJson;
+	TArray<FString> SaveFailures;
+	if (RenameMap.Num() > 0 && !bNoScanExternal)
+	{
+		TArray<UPackage*> PackagesToSave;
+		LiftHelpers::FExternalRetargetStats Stats;
+		if (bDryRun)
+		{
+			// Dry-run: walk + count, but don't mutate. Run with empty save list;
+			// the scan itself mutates nothing when we abort before SetExternalMember.
+			// Cheaper to special-case here than duplicate the walk logic.
+			// -- Actually simplest: run the real walk on a scratch Blueprint clone?
+			// No — just do the walk in-place and skip the save. The SetExternalMember
+			// mutations are undone by not saving (in-memory only), but could leak
+			// dirty state. Trade: honor dry-run by counting only.
+			// Implementation: signal dry-run via empty RenameMap in a second call? No.
+			// Simpler: emit a warning that dry-run doesn't enumerate externals, and
+			// ask the user to run without --dry-run for the real count.
+			// See response.warnings below.
+		}
+		else
+		{
+			Stats = LiftHelpers::RetargetExternalVarRefs(Blueprint, RenameMap, ExternalSearchPaths, PackagesToSave);
+			ExternalNodesRetargeted = Stats.NodesRetargeted;
+			for (const FString& BpPath : Stats.AffectedBpPaths)
+			{
+				AffectedBpsJson.Add(MakeShareable(new FJsonValueString(BpPath)));
+			}
+
+			// Batch save the packages we dirtied. On failure, leave the in-memory
+			// retargeting intact (next save/compile will pick it up) and report.
+			if (PackagesToSave.Num() > 0)
+			{
+				const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty=*/true);
+				if (!bSaved)
+				{
+					SaveFailures.Add(TEXT("One or more retargeted external BP packages failed to save; re-run after checking them out in p4"));
+				}
+			}
+		}
+	}
+
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetBoolField(TEXT("dry_run"), bDryRun);
 	Response->SetArrayField(TEXT("lifted"), LiftedJson);
 	Response->SetArrayField(TEXT("missing"), MissingJson);
 	Response->SetNumberField(TEXT("renamed"), Renamed);
 	Response->SetNumberField(TEXT("removed"), Removed);
+	Response->SetBoolField(TEXT("scanned_external"), !bNoScanExternal && RenameMap.Num() > 0);
+	Response->SetNumberField(TEXT("external_nodes_retargeted"), ExternalNodesRetargeted);
+	Response->SetNumberField(TEXT("external_bps_affected"), AffectedBpsJson.Num());
+	Response->SetArrayField(TEXT("external_bps"), AffectedBpsJson);
+
+	// Warnings list — non-fatal conditions the caller should see.
+	TArray<TSharedPtr<FJsonValue>> Warnings;
+	if (bDryRun && RenameMap.Num() > 0 && !bNoScanExternal)
+	{
+		Warnings.Add(MakeShareable(new FJsonValueString(
+			TEXT("dry-run skips external-BP scan; rerun without --dry-run for the actual retargeting + save"))));
+	}
+	if (bNoScanExternal && RenameMap.Num() > 0)
+	{
+		Warnings.Add(MakeShareable(new FJsonValueString(
+			TEXT("no_scan_external is set and at least one var was renamed; external callers may have orphan refs — verify with `digbp findvaruses --var=<OldName>`"))));
+	}
+	for (const FString& Msg : SaveFailures)
+	{
+		Warnings.Add(MakeShareable(new FJsonValueString(Msg)));
+	}
+	if (Warnings.Num() > 0)
+	{
+		Response->SetArrayField(TEXT("warnings"), Warnings);
+	}
 	return Response;
 }
 
