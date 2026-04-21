@@ -1903,7 +1903,13 @@ FAssetReferenceGraph UBlueprintExportReader::BuildReferenceViewerGraph(
 			TArray<FAssetDependency> AllDepsData;
 			AssetRegistry.GetDependencies(FName(*CurrentPath), AllDepsData, UE::AssetRegistry::EDependencyCategory::Package);
 
-			FAssetReferenceNode& CurrentNode = GetOrCreateNode(CurrentPath, CurrentDepth);
+			// Ensure the current node exists. DO NOT hold an FAssetReferenceNode&
+			// across subsequent GetOrCreateNode calls — those calls may Add() into
+			// Graph.Nodes and trigger a TMap rehash, which invalidates any refs we
+			// already obtained. Stale-ref writes then corrupt another entry's
+			// TArray<FString> internals, and a later AddUnique crashes in FString
+			// compare with a 0x...0049 address pattern. Fetch fresh every time.
+			GetOrCreateNode(CurrentPath, CurrentDepth);
 
 			for (const FAssetDependency& DepData : AllDepsData)
 			{
@@ -1933,15 +1939,17 @@ FAssetReferenceGraph UBlueprintExportReader::BuildReferenceViewerGraph(
 					}
 				}
 
-				// Create/update the dependency node
-				FAssetReferenceNode& DepNode = GetOrCreateNode(DepPath, CurrentDepth + 1);
-				DepNode.bIsHardReference = bIsHard;
+				// Create the dependency node first. After this, any previously-held
+				// ref to another Graph.Nodes entry may be stale, so we re-fetch
+				// below via the TMap for every write.
+				GetOrCreateNode(DepPath, CurrentDepth + 1);
+				Graph.Nodes[DepPath].bIsHardReference = bIsHard;
 
-				// Add to current node's dependencies list
-				CurrentNode.Dependencies.AddUnique(DepPath);
+				// Add to current node's dependencies list (fresh lookup).
+				Graph.Nodes[CurrentPath].Dependencies.AddUnique(DepPath);
 
-				// Add to dependency node's referencers list
-				DepNode.Referencers.AddUnique(CurrentPath);
+				// Add to dependency node's referencers list (fresh lookup).
+				Graph.Nodes[DepPath].Referencers.AddUnique(CurrentPath);
 
 				// Queue for further processing
 				if (CurrentDepth + 1 < DependencyDepth)
@@ -1979,7 +1987,9 @@ FAssetReferenceGraph UBlueprintExportReader::BuildReferenceViewerGraph(
 			TArray<FAssetDependency> AllRefsData;
 			AssetRegistry.GetReferencers(FName(*CurrentPath), AllRefsData, UE::AssetRegistry::EDependencyCategory::Package);
 
-			FAssetReferenceNode& CurrentNode = GetOrCreateNode(CurrentPath, -CurrentDepth);
+			// Same ref-stability rule as the dep loop above — don't hold an
+			// FAssetReferenceNode& across a GetOrCreateNode() that may rehash.
+			GetOrCreateNode(CurrentPath, -CurrentDepth);
 
 			for (const FAssetDependency& RefData : AllRefsData)
 			{
@@ -2009,15 +2019,13 @@ FAssetReferenceGraph UBlueprintExportReader::BuildReferenceViewerGraph(
 					}
 				}
 
-				// Create/update the referencer node (negative depth)
-				FAssetReferenceNode& RefNode = GetOrCreateNode(RefPath, -(CurrentDepth + 1));
-				RefNode.bIsHardReference = bIsHard;
+				// Create the referencer node (negative depth). Fresh TMap lookups
+				// for each write below — no stale refs across GetOrCreateNode.
+				GetOrCreateNode(RefPath, -(CurrentDepth + 1));
+				Graph.Nodes[RefPath].bIsHardReference = bIsHard;
 
-				// Add to current node's referencers list
-				CurrentNode.Referencers.AddUnique(RefPath);
-
-				// Add to referencer node's dependencies list
-				RefNode.Dependencies.AddUnique(CurrentPath);
+				Graph.Nodes[CurrentPath].Referencers.AddUnique(RefPath);
+				Graph.Nodes[RefPath].Dependencies.AddUnique(CurrentPath);
 
 				// Queue for further processing
 				if (CurrentDepth + 1 < ReferencerDepth)
