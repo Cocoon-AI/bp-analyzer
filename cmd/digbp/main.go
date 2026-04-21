@@ -541,6 +541,7 @@ func cppGenUPropertysCmd() *cobra.Command {
 		path     string
 		varsCSV  string
 		category string
+		rawNames bool
 	)
 	cmd := &cobra.Command{
 		Use:   "upropertys",
@@ -552,12 +553,25 @@ primitives, object/class refs, struct<T>, containers, and multicast delegates
 BlueprintCallable) — both flags, to avoid the "Event Dispatcher is not
 BlueprintCallable" compile error on K2Node_CallDelegate nodes).
 
-Stdout only, no files written. Feed the --vars list from the same set you
-passed to 'digbp edit variable lift' to keep the two sides in sync.`,
+By default, BP names are transformed into C++-friendly identifiers (spaces
+stripped, first letter of each whitespace segment upper-cased) — the same
+rule 'digbp edit variable lift' applies, so cppgen + lift stay in sync:
+  "Current Level"       → "CurrentLevel"
+  "XP Level Threshold"  → "XPLevelThreshold"
+Pass --vars using the RAW BP names regardless of this transform; only the
+emitted C++ is reshaped.
+
+Use --raw-names to preserve original BP names verbatim (produces invalid
+C++ if any names contain spaces or other non-identifier chars).
+
+Stdout only, no files written.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			params := map[string]interface{}{"path": path}
 			if category != "" {
 				params["category"] = category
+			}
+			if rawNames {
+				params["raw_names"] = true
 			}
 			if varsCSV != "" {
 				parts := strings.Split(varsCSV, ",")
@@ -574,8 +588,9 @@ passed to 'digbp edit variable lift' to keep the two sides in sync.`,
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
-	cmd.Flags().StringVar(&varsCSV, "vars", "", "Comma-separated variable/dispatcher names to emit (default: all)")
+	cmd.Flags().StringVar(&varsCSV, "vars", "", "Comma-separated BP variable/dispatcher names (raw, with spaces) to emit (default: all)")
 	cmd.Flags().StringVar(&category, "category", "", `Override the Category specifier on all emitted UPROPERTYs`)
+	cmd.Flags().BoolVar(&rawNames, "raw-names", false, "Preserve raw BP names in emitted C++ (default: transform to C++-friendly identifiers)")
 	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }

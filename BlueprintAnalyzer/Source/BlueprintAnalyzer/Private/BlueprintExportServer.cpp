@@ -577,6 +577,9 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		FString Category;
 		Params->TryGetStringField(TEXT("category"), Category);
 
+		bool bRawNames = false;
+		Params->TryGetBoolField(TEXT("raw_names"), bRawNames);
+
 		TArray<FString> VarsFilter;
 		const TArray<TSharedPtr<FJsonValue>>* VarsArray = nullptr;
 		if (Params->TryGetArrayField(TEXT("vars"), VarsArray) && VarsArray)
@@ -587,7 +590,7 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 			}
 		}
 
-		TSharedPtr<FJsonObject> Result = Commandlet->CppGenUPropertysToJson(Path, VarsFilter, Category);
+		TSharedPtr<FJsonObject> Result = Commandlet->CppGenUPropertysToJson(Path, VarsFilter, Category, bRawNames);
 		return MakeResponse(Id, Result);
 	}
 

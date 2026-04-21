@@ -168,6 +168,36 @@ static FString BPTypeToCppType(const FString& BPType)
 	return Result;
 }
 
+// cppgen: transform a raw BP variable/dispatcher name into a C++-friendly identifier
+// by stripping whitespace and upper-casing the first char of each whitespace-separated
+// segment. Mirrors LiftHelpers::ToCppIdentifier in BlueprintEditOps_Variables.cpp —
+// the two operations belong in a common workflow, so they must agree on the naming
+// rule. Named CppGen_ to dodge unity-build static-fn collisions across the two files.
+static FString CppGen_ToCppIdentifier(const FString& In)
+{
+	FString Out;
+	Out.Reserve(In.Len());
+	bool bAtSegmentStart = true;
+	for (TCHAR C : In)
+	{
+		if (FChar::IsWhitespace(C))
+		{
+			bAtSegmentStart = true;
+			continue;
+		}
+		if (bAtSegmentStart)
+		{
+			Out.AppendChar(FChar::ToUpper(C));
+			bAtSegmentStart = false;
+		}
+		else
+		{
+			Out.AppendChar(C);
+		}
+	}
+	return Out;
+}
+
 // cppgen: richer type conversion than BPTypeToCppType. Adds `struct<Foo>` → `FFoo`
 // and recursive container unwrapping so TArray<object<Foo>> becomes TArray<UFoo*>.
 // Pure string transform, no UObject lookups — operates on the PinTypeToString output.
@@ -858,7 +888,7 @@ void UBlueprintExportCommandlet::BuildCppAudit(const TArray<FString>& SearchPath
 	OutputJson(CppAuditToJson(SearchPaths));
 }
 
-TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category)
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category, bool bRawNames)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
 	FBlueprintExportData Data = Reader->ExportBlueprint(BlueprintPath);
@@ -938,7 +968,8 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const
 				DefaultSuffix = FString::Printf(TEXT(" = %s"), *Var.DefaultValue);
 			}
 		}
-		UPropBlock += FString::Printf(TEXT("%s %s%s;\n\n"), *CppType, *Var.VariableName, *DefaultSuffix);
+		const FString EmittedName = bRawNames ? Var.VariableName : CppGen_ToCppIdentifier(Var.VariableName);
+		UPropBlock += FString::Printf(TEXT("%s %s%s;\n\n"), *CppType, *EmittedName, *DefaultSuffix);
 		++VarCount;
 	}
 
@@ -948,7 +979,11 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const
 		if (bFiltering && !Filter.Contains(Disp.DispatcherName)) { continue; }
 		SeenVars.Add(Disp.DispatcherName);
 
-		const FString SigType = FString::Printf(TEXT("F%sSignature"), *Disp.DispatcherName);
+		// Apply the same name transform to dispatchers. Dispatcher pin names
+		// (delegate params) are left raw since they're just argument labels —
+		// valid as-is unless the BP author used exotic characters, which is rare.
+		const FString EmittedDispName = bRawNames ? Disp.DispatcherName : CppGen_ToCppIdentifier(Disp.DispatcherName);
+		const FString SigType = FString::Printf(TEXT("F%sSignature"), *EmittedDispName);
 		const int32 Arity = Disp.Parameters.Num();
 
 		// DECLARE macro: "DECLARE_..._NParams(FFooSignature, Type1, Name1, Type2, Name2, ...)"
@@ -969,7 +1004,7 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const
 			FString::Printf(TEXT("Category = \"%s\""), *PickCategory(Disp.Category))
 		};
 		UPropBlock += FString::Printf(TEXT("UPROPERTY(%s)\n"), *FString::Join(Specifiers, TEXT(", ")));
-		UPropBlock += FString::Printf(TEXT("%s %s;\n\n"), *SigType, *Disp.DispatcherName);
+		UPropBlock += FString::Printf(TEXT("%s %s;\n\n"), *SigType, *EmittedDispName);
 		++DelegateCount;
 	}
 

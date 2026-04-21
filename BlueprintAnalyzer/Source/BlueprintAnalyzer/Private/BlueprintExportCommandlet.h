@@ -109,9 +109,13 @@ public:
 	TSharedPtr<FJsonObject> CppAuditToJson(const TArray<FString>& SearchPaths);
 
 	// Generate C++ UPROPERTY declarations from a BP's variables + dispatchers.
-	// VarsFilter is an optional whitelist (empty = all vars). Category overrides
-	// the emitted Category specifier (empty = derive from BP variable metadata).
-	TSharedPtr<FJsonObject> CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category);
+	// VarsFilter is an optional whitelist matched against RAW BP names (empty = all).
+	// Category overrides the emitted Category specifier (empty = derive from BP).
+	// bRawNames preserves the original BP var names verbatim in the emitted C++;
+	// default (false) applies the same strip-spaces + PascalCase transform that
+	// `edit variable lift` uses, so cppgen output is valid C++ identifiers and
+	// matches the names lift will produce.
+	TSharedPtr<FJsonObject> CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category, bool bRawNames);
 
 private:
 	// CLI wrappers that call ToJson methods and output results
