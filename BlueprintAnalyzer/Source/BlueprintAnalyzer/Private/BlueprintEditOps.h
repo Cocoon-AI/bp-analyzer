@@ -40,6 +40,8 @@ public:
 	static TSharedPtr<FJsonObject> VariableAdd(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableRemove(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableRename(const TSharedPtr<FJsonObject>& Params);
+	static TSharedPtr<FJsonObject> VariableUnshadow(const TSharedPtr<FJsonObject>& Params);
+	static TSharedPtr<FJsonObject> VariableLift(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableSetType(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableSetDefault(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> VariableSetFlags(const TSharedPtr<FJsonObject>& Params);

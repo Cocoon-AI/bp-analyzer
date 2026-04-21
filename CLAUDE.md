@@ -154,6 +154,10 @@ digbp cpp-audit --dir=/Game/
 digbp cpp-audit --dir=/Game/ --out=cpp-refs.json
 digbp cpp-audit --dir=/Game/Showdown/ --pretty
 
+# Emit C++ UPROPERTY declarations from BP metadata (for BP→C++ variable lift)
+digbp cppgen upropertys --path=/Game/BP
+digbp cppgen upropertys --path=/Game/BP --vars="CurrentXP,OnReady" --category="AccountInfo"
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```
@@ -175,6 +179,10 @@ digbp edit variable add --path=/Game/BP --name=Health --type=float
 digbp edit variable remove --path=/Game/BP --name=Health
 digbp edit variable remove --path=/Game/BP --name=Broken --force  # Force-remove broken-type vars
 digbp edit variable rename --path=/Game/BP --old-name=Hp --new-name=Health
+digbp edit variable unshadow --path=/Game/BP --dry-run            # Retarget <X>_0 shadow refs → <X>
+digbp edit variable unshadow --path=/Game/BP                      # Apply
+digbp edit variable lift --path=/Game/BP --vars="Current XP,XP Level Threshold"  # Rename-to-CPP-friendly + remove (atomic)
+digbp edit variable lift --path=/Game/BP --vars="..." --dry-run
 digbp edit variable set-type --path=/Game/BP --name=Health --type=int
 digbp edit variable set-default --path=/Game/BP --name=Health --value=100
 digbp edit variable set-flags --path=/Game/BP --name=Health --public --replicated

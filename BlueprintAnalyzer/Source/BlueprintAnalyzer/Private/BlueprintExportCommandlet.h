@@ -108,6 +108,11 @@ public:
 	// Build full C++ reference audit across a search path (reverse-index of native symbols -> BP callers)
 	TSharedPtr<FJsonObject> CppAuditToJson(const TArray<FString>& SearchPaths);
 
+	// Generate C++ UPROPERTY declarations from a BP's variables + dispatchers.
+	// VarsFilter is an optional whitelist (empty = all vars). Category overrides
+	// the emitted Category specifier (empty = derive from BP variable metadata).
+	TSharedPtr<FJsonObject> CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

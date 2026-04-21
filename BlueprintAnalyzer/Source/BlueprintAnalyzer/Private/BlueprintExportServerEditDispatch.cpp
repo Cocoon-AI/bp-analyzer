@@ -31,6 +31,8 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 	if (Method == TEXT("edit.variable.add"))          { return FBlueprintEditOps::VariableAdd(Params); }
 	if (Method == TEXT("edit.variable.remove"))       { return FBlueprintEditOps::VariableRemove(Params); }
 	if (Method == TEXT("edit.variable.rename"))       { return FBlueprintEditOps::VariableRename(Params); }
+	if (Method == TEXT("edit.variable.unshadow"))     { return FBlueprintEditOps::VariableUnshadow(Params); }
+	if (Method == TEXT("edit.variable.lift"))         { return FBlueprintEditOps::VariableLift(Params); }
 	if (Method == TEXT("edit.variable.set_type"))     { return FBlueprintEditOps::VariableSetType(Params); }
 	if (Method == TEXT("edit.variable.set_default"))  { return FBlueprintEditOps::VariableSetDefault(Params); }
 	if (Method == TEXT("edit.variable.set_flags"))    { return FBlueprintEditOps::VariableSetFlags(Params); }

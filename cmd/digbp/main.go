@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cocoonai/bp-analyzer/internal/config"
@@ -61,6 +62,7 @@ func main() {
 		findpropCmd(),
 		searchCmd(),
 		cppAuditCmd(),
+		cppGenCmd(),
 		editCmd(),
 		versionCmd(),
 	)
@@ -522,6 +524,59 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&query, "query", "", "Text to search for (required)")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("query")
+	return cmd
+}
+
+func cppGenCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cppgen",
+		Short: "Generate C++ source snippets from BP metadata",
+	}
+	cmd.AddCommand(cppGenUPropertysCmd())
+	return cmd
+}
+
+func cppGenUPropertysCmd() *cobra.Command {
+	var (
+		path     string
+		varsCSV  string
+		category string
+	)
+	cmd := &cobra.Command{
+		Use:   "upropertys",
+		Short: "Emit ready-to-paste UPROPERTY declarations for a BP's variables + dispatchers",
+		Long: `Generates C++ UPROPERTY lines for every variable and event dispatcher on the
+given Blueprint (optionally filtered with --vars). Type conversion handles
+primitives, object/class refs, struct<T>, containers, and multicast delegates
+(emits DECLARE_DYNAMIC_MULTICAST_DELEGATE_N + UPROPERTY(BlueprintAssignable,
+BlueprintCallable) — both flags, to avoid the "Event Dispatcher is not
+BlueprintCallable" compile error on K2Node_CallDelegate nodes).
+
+Stdout only, no files written. Feed the --vars list from the same set you
+passed to 'digbp edit variable lift' to keep the two sides in sync.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{"path": path}
+			if category != "" {
+				params["category"] = category
+			}
+			if varsCSV != "" {
+				parts := strings.Split(varsCSV, ",")
+				trimmed := make([]string, 0, len(parts))
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						trimmed = append(trimmed, p)
+					}
+				}
+				params["vars"] = trimmed
+			}
+			return callServer("cppgen.upropertys", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().StringVar(&varsCSV, "vars", "", "Comma-separated variable/dispatcher names to emit (default: all)")
+	cmd.Flags().StringVar(&category, "category", "", `Override the Category specifier on all emitted UPROPERTYs`)
+	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }
 

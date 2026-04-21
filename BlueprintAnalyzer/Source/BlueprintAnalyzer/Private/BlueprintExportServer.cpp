@@ -566,6 +566,31 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Result);
 	}
 
+	if (Method == TEXT("cppgen.upropertys"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+
+		FString Category;
+		Params->TryGetStringField(TEXT("category"), Category);
+
+		TArray<FString> VarsFilter;
+		const TArray<TSharedPtr<FJsonValue>>* VarsArray = nullptr;
+		if (Params->TryGetArrayField(TEXT("vars"), VarsArray) && VarsArray)
+		{
+			for (const TSharedPtr<FJsonValue>& V : *VarsArray)
+			{
+				VarsFilter.Add(V->AsString());
+			}
+		}
+
+		TSharedPtr<FJsonObject> Result = Commandlet->CppGenUPropertysToJson(Path, VarsFilter, Category);
+		return MakeResponse(Id, Result);
+	}
+
 	if (Method == TEXT("search"))
 	{
 		FString Dir;

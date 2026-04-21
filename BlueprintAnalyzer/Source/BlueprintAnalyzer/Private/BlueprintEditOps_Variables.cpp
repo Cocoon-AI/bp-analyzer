@@ -9,6 +9,10 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/UserDefinedStruct.h"
 #include "EdGraphSchema_K2.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "K2Node_Variable.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/Class.h"
@@ -313,6 +317,320 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableRename(const TSharedPtr<FJson
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("old_name"), OldName);
 	Response->SetStringField(TEXT("new_name"), NewName);
+	return Response;
+}
+
+//------------------------------------------------------------------------------
+// edit.variable.unshadow
+//
+// Recovery from the "_0 shadow" trap: when a BP author adds a C++ UPROPERTY to
+// the parent class while the BP still has a member variable of the same name,
+// UE renames the BP var to `<X>_0` *and* retargets every K2Node_VariableGet/Set
+// that referenced it to the new `_0` name. That rewrite is persisted into the
+// .uasset — only recovery used to be `p4 revert` + redo.
+//
+// This op walks the BP, detects every NewVariable named `<X>_0` whose base name
+// `<X>` exists on the parent class (as a UPROPERTY or multicast delegate), and:
+//   (a) retargets every K2Node_Variable* node referencing `<X>_0` to reference `<X>`
+//   (b) retargets every K2Node_BaseMCDelegate* similarly
+//   (c) removes the `<X>_0` BP variables
+//   (d) marks the BP structurally modified (caller compiles separately)
+//
+// Idempotent: running on an already-clean BP produces zero actions and success.
+//------------------------------------------------------------------------------
+
+namespace UnshadowHelpers
+{
+	// Returns true if ShadowName is "<Base>_0" for some non-empty Base.
+	// Strict "_0" suffix for v1 — UE's shadow rename starts at _0 and only
+	// climbs to _1, _2 when prior suffixes already exist, which is vanishingly
+	// rare in the lift workflow this op targets.
+	static bool TrySplitShadowName(const FName& ShadowName, FName& OutBase)
+	{
+		const FString S = ShadowName.ToString();
+		static const TCHAR* Suffix = TEXT("_0");
+		if (!S.EndsWith(Suffix)) { return false; }
+		const FString Base = S.LeftChop(FString(Suffix).Len());
+		if (Base.IsEmpty()) { return false; }
+		OutBase = FName(*Base);
+		return true;
+	}
+
+	// Enumerate every UPROPERTY + multicast delegate on the parent chain into a
+	// set of FNames. Used to decide whether a `<X>_0` shadow has a real `<X>`
+	// counterpart on the parent (only those qualify for retargeting).
+	static void CollectParentSymbolNames(UClass* ParentClass, TSet<FName>& OutNames)
+	{
+		for (UClass* Cls = ParentClass; Cls; Cls = Cls->GetSuperClass())
+		{
+			if (Cls == UObject::StaticClass()) { break; }
+			for (TFieldIterator<FProperty> It(Cls, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+			{
+				OutNames.Add(It->GetFName());
+			}
+		}
+	}
+}
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::VariableUnshadow(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+
+	bool bDryRun = false;
+	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	UClass* ParentClass = Blueprint->ParentClass;
+	if (!ParentClass)
+	{
+		return FBlueprintEditHelpers::MakeEditError(
+			TEXT("Blueprint has no parent class to unshadow against"));
+	}
+
+	// Build <parent symbol> set so we only treat `<X>_0` as a shadow when `<X>`
+	// actually exists on the parent — prevents blindly renaming arbitrary `_0`
+	// variables into other BPs' logic.
+	TSet<FName> ParentSymbols;
+	UnshadowHelpers::CollectParentSymbolNames(ParentClass, ParentSymbols);
+
+	// shadow name -> base name. TMap-of-FName is fine here; count is small.
+	TMap<FName, FName> ShadowMap;
+	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+	{
+		FName Base;
+		if (UnshadowHelpers::TrySplitShadowName(Var.VarName, Base) && ParentSymbols.Contains(Base))
+		{
+			ShadowMap.Add(Var.VarName, Base);
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DetectedJson;
+	for (const TPair<FName, FName>& Pair : ShadowMap)
+	{
+		TSharedPtr<FJsonObject> Item = MakeShareable(new FJsonObject);
+		Item->SetStringField(TEXT("shadow_name"), Pair.Key.ToString());
+		Item->SetStringField(TEXT("parent_name"), Pair.Value.ToString());
+		DetectedJson.Add(MakeShareable(new FJsonValueObject(Item)));
+	}
+
+	// Count intended retargets even on dry-run so the caller knows the blast radius.
+	int32 NodesRetargeted = 0;
+
+#if WITH_EDITORONLY_DATA
+	TArray<UEdGraph*> AllGraphs;
+	AllGraphs.Append(Blueprint->FunctionGraphs);
+	AllGraphs.Append(Blueprint->UbergraphPages);
+	AllGraphs.Append(Blueprint->MacroGraphs);
+	AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
+
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) continue;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+
+			// Variable get/set retargeting
+			if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
+			{
+				const FName CurName = VarNode->VariableReference.GetMemberName();
+				if (const FName* NewName = ShadowMap.Find(CurName))
+				{
+					if (!bDryRun)
+					{
+						// Self-scope — the target property lives on the BP's parent
+						// chain, and self-scope refs resolve through the generated
+						// class. Matches how inherited UPROPERTY refs normally look.
+						VarNode->VariableReference.SetSelfMember(*NewName);
+						VarNode->ReconstructNode();
+					}
+					++NodesRetargeted;
+				}
+				continue;
+			}
+
+			// Delegate bind/call retargeting (Add/Remove/Clear/Call/Assign — all derive
+			// from UK2Node_BaseMCDelegate and expose DelegateReference)
+			if (UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(Node))
+			{
+				const FName CurName = DelegateNode->DelegateReference.GetMemberName();
+				if (const FName* NewName = ShadowMap.Find(CurName))
+				{
+					if (!bDryRun)
+					{
+						DelegateNode->DelegateReference.SetSelfMember(*NewName);
+						DelegateNode->ReconstructNode();
+					}
+					++NodesRetargeted;
+				}
+				continue;
+			}
+		}
+	}
+#endif // WITH_EDITORONLY_DATA
+
+	int32 VarsRemoved = 0;
+	if (!bDryRun && ShadowMap.Num() > 0)
+	{
+		// Remove shadow vars by iterating backwards to avoid index invalidation.
+		for (int32 i = Blueprint->NewVariables.Num() - 1; i >= 0; --i)
+		{
+			if (ShadowMap.Contains(Blueprint->NewVariables[i].VarName))
+			{
+				Blueprint->NewVariables.RemoveAt(i);
+				++VarsRemoved;
+			}
+		}
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetBoolField(TEXT("dry_run"), bDryRun);
+	Response->SetArrayField(TEXT("shadows_detected"), DetectedJson);
+	Response->SetNumberField(TEXT("nodes_retargeted"), NodesRetargeted);
+	Response->SetNumberField(TEXT("vars_removed"), VarsRemoved);
+	return Response;
+}
+
+//------------------------------------------------------------------------------
+// edit.variable.lift
+//
+// Atomic multi-var lift: for each requested var, rename to a C++-identifier-
+// friendly form (strip spaces, keep existing casing) and remove. Single RPC,
+// single structural modification pass, caller compiles separately. Exists so
+// the stage-1 BP→C++ var-lift can't partially apply if the middle step errors.
+//
+// --dry-run returns the plan without mutating anything.
+// Returns per-var final name, plus any requested names not found in the BP.
+//------------------------------------------------------------------------------
+
+namespace LiftHelpers
+{
+	// Strip spaces + tabs and upper-case the first char of each whitespace-
+	// separated segment. Keeps existing casing of every non-first char so
+	// "XP Level Threshold" → "XPLevelThreshold" and "currentXP" → "CurrentXP".
+	static FString ToCppIdentifier(const FString& In)
+	{
+		FString Out;
+		Out.Reserve(In.Len());
+		bool bAtSegmentStart = true;
+		for (TCHAR C : In)
+		{
+			if (FChar::IsWhitespace(C))
+			{
+				bAtSegmentStart = true;
+				continue;
+			}
+			if (bAtSegmentStart)
+			{
+				Out.AppendChar(FChar::ToUpper(C));
+				bAtSegmentStart = false;
+			}
+			else
+			{
+				Out.AppendChar(C);
+			}
+		}
+		return Out;
+	}
+}
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+
+	// `vars` is an array of strings (CSV pre-split on the client side).
+	const TArray<TSharedPtr<FJsonValue>>* VarsArray = nullptr;
+	if (!Params->TryGetArrayField(TEXT("vars"), VarsArray) || !VarsArray || VarsArray->Num() == 0)
+	{
+		return FBlueprintEditHelpers::MakeEditError(TEXT("Missing required param: vars (non-empty array of BP variable names)"));
+	}
+
+	bool bDryRun = false;
+	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	// Build the list of existing BP var names once, for missing-var suggestions.
+	TArray<FString> AvailableVars;
+	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+	{
+		AvailableVars.Add(Var.VarName.ToString());
+	}
+
+	TArray<TSharedPtr<FJsonValue>> LiftedJson;
+	TArray<TSharedPtr<FJsonValue>> MissingJson;
+	int32 Renamed = 0;
+	int32 Removed = 0;
+
+	for (const TSharedPtr<FJsonValue>& Val : *VarsArray)
+	{
+		FString Requested = Val->AsString().TrimStartAndEnd();
+		if (Requested.IsEmpty()) { continue; }
+
+		const FName CurName(*Requested);
+		if (FindVariableIndex(Blueprint, CurName) == INDEX_NONE)
+		{
+			TSharedPtr<FJsonObject> MissItem = MakeShareable(new FJsonObject);
+			MissItem->SetStringField(TEXT("requested"), Requested);
+			// v1 suggestion = full available list; callers can fuzzy-match client-side.
+			TArray<TSharedPtr<FJsonValue>> Avail;
+			for (const FString& AV : AvailableVars) { Avail.Add(MakeShareable(new FJsonValueString(AV))); }
+			MissItem->SetArrayField(TEXT("available_vars"), Avail);
+			MissingJson.Add(MakeShareable(new FJsonValueObject(MissItem)));
+			continue;
+		}
+
+		const FString FinalStr = LiftHelpers::ToCppIdentifier(Requested);
+		const FName FinalName(*FinalStr);
+		const bool bNeedsRename = FinalName != CurName;
+
+		// Collision check: only block if the target already exists AND isn't this var itself.
+		if (bNeedsRename && FindVariableIndex(Blueprint, FinalName) != INDEX_NONE)
+		{
+			TSharedPtr<FJsonObject> MissItem = MakeShareable(new FJsonObject);
+			MissItem->SetStringField(TEXT("requested"), Requested);
+			MissItem->SetStringField(TEXT("error"), FString::Printf(
+				TEXT("Target name '%s' already exists — rename that conflict first, then rerun"),
+				*FinalStr));
+			MissingJson.Add(MakeShareable(new FJsonValueObject(MissItem)));
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> LiftItem = MakeShareable(new FJsonObject);
+		LiftItem->SetStringField(TEXT("requested"), Requested);
+		LiftItem->SetStringField(TEXT("final_name"), FinalStr);
+		LiftItem->SetBoolField(TEXT("renamed"), bNeedsRename);
+
+		if (!bDryRun)
+		{
+			if (bNeedsRename)
+			{
+				FBlueprintEditorUtils::RenameMemberVariable(Blueprint, CurName, FinalName);
+				++Renamed;
+			}
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, FinalName);
+			++Removed;
+		}
+		LiftedJson.Add(MakeShareable(new FJsonValueObject(LiftItem)));
+	}
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetBoolField(TEXT("dry_run"), bDryRun);
+	Response->SetArrayField(TEXT("lifted"), LiftedJson);
+	Response->SetArrayField(TEXT("missing"), MissingJson);
+	Response->SetNumberField(TEXT("renamed"), Renamed);
+	Response->SetNumberField(TEXT("removed"), Removed);
 	return Response;
 }
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +17,8 @@ func editVariableCmd() *cobra.Command {
 		editVariableAddCmd(),
 		editVariableRemoveCmd(),
 		editVariableRenameCmd(),
+		editVariableUnshadowCmd(),
+		editVariableLiftCmd(),
 		editVariableSetTypeCmd(),
 		editVariableSetDefaultCmd(),
 		editVariableSetFlagsCmd(),
@@ -156,6 +160,88 @@ func editVariableRenameCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("old-name")
 	_ = cmd.MarkFlagRequired("new-name")
+	return cmd
+}
+
+func editVariableUnshadowCmd() *cobra.Command {
+	var (
+		path   string
+		dryRun bool
+	)
+	cmd := &cobra.Command{
+		Use:   "unshadow",
+		Short: "Retarget K2Node refs from <X>_0 shadow vars back to parent <X>; remove shadows",
+		Long: `When a BP author adds a C++ UPROPERTY to the parent class while the BP still
+has a member variable of the same name, UE renames the BP var to <X>_0 AND
+retargets every K2Node_VariableGet/Set node to the new _0 name. This op
+detects that state and puts it right:
+
+  - Finds BP vars named <X>_0 where the parent class exposes <X>
+  - Retargets K2Node_Variable and K2Node_BaseMCDelegate nodes from <X>_0 to <X>
+  - Removes the <X>_0 vars
+  - Saves (no compile — caller compiles separately)
+
+Idempotent: running on an already-clean BP reports zero actions and success.
+Use --dry-run to preview without mutating.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{"path": path}
+			if dryRun {
+				params["dry_run"] = true
+			}
+			return callServer("edit.variable.unshadow", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report the plan without mutating the BP")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func editVariableLiftCmd() *cobra.Command {
+	var (
+		path   string
+		vars   string
+		dryRun bool
+	)
+	cmd := &cobra.Command{
+		Use:   "lift",
+		Short: "Atomic multi-var lift: rename each var to a C++-friendly name, then remove",
+		Long: `For each comma-separated var, renames to a C++-identifier-friendly form
+(strips spaces, uppercases the first letter of each whitespace-separated
+segment; "XP Level Threshold" → "XPLevelThreshold") and then removes the
+variable. Collapses the first three steps of the BP→C++ lift workflow into
+one atomic call.
+
+Reports final names, any requested vars that weren't found (with the list
+of available vars for fuzzy matching client-side), and any target-name
+collisions. Does not compile — caller compiles separately after writing the
+replacement C++ UPROPERTYs.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Split + trim the user-supplied CSV. Keeps spaces inside var names
+			// (e.g. "XP Level Threshold") intact.
+			parts := strings.Split(vars, ",")
+			trimmed := make([]string, 0, len(parts))
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					trimmed = append(trimmed, p)
+				}
+			}
+			params := map[string]interface{}{
+				"path": path,
+				"vars": trimmed,
+			}
+			if dryRun {
+				params["dry_run"] = true
+			}
+			return callServer("edit.variable.lift", params)
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
+	cmd.Flags().StringVar(&vars, "vars", "", `Comma-separated BP variable names to lift, e.g. --vars="XP Level Threshold,Current XP,Beta XP Key" (required)`)
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report the plan without mutating the BP")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("vars")
 	return cmd
 }
 

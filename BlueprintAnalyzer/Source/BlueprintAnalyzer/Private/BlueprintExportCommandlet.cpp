@@ -168,6 +168,83 @@ static FString BPTypeToCppType(const FString& BPType)
 	return Result;
 }
 
+// cppgen: richer type conversion than BPTypeToCppType. Adds `struct<Foo>` → `FFoo`
+// and recursive container unwrapping so TArray<object<Foo>> becomes TArray<UFoo*>.
+// Pure string transform, no UObject lookups — operates on the PinTypeToString output.
+static FString BPTypeToCppTypeRich(const FString& BPType)
+{
+	FString T = BPType;
+
+	// Strip decorators for recursive inner-type conversion; we'll re-wrap at the end.
+	bool bIsConst = T.StartsWith(TEXT("const "));
+	if (bIsConst) { T = T.Mid(6); }
+	bool bIsRef = T.EndsWith(TEXT("&"));
+	if (bIsRef) { T = T.LeftChop(1); }
+
+	// Containers: recurse on the inner type. The reader emits TArray<T>, TSet<T>,
+	// TMap<K,V> verbatim as wrapper strings — slice off the angle-brackets and
+	// recurse. TMap uses a single inner string with a comma in it; split once.
+	if (T.StartsWith(TEXT("TArray<")) && T.EndsWith(TEXT(">")))
+	{
+		const FString Inner = T.Mid(7, T.Len() - 8);
+		T = TEXT("TArray<") + BPTypeToCppTypeRich(Inner) + TEXT(">");
+	}
+	else if (T.StartsWith(TEXT("TSet<")) && T.EndsWith(TEXT(">")))
+	{
+		const FString Inner = T.Mid(5, T.Len() - 6);
+		T = TEXT("TSet<") + BPTypeToCppTypeRich(Inner) + TEXT(">");
+	}
+	else if (T.StartsWith(TEXT("TMap<")) && T.EndsWith(TEXT(">")))
+	{
+		const FString Inner = T.Mid(5, T.Len() - 6);
+		int32 Comma;
+		if (Inner.FindChar(TEXT(','), Comma))
+		{
+			T = TEXT("TMap<") + BPTypeToCppTypeRich(Inner.Left(Comma)) + TEXT(", ") + BPTypeToCppTypeRich(Inner.Mid(Comma + 1)) + TEXT(">");
+		}
+		else
+		{
+			T = TEXT("TMap<") + BPTypeToCppTypeRich(Inner) + TEXT(">");
+		}
+	}
+	else if (T.StartsWith(TEXT("struct<")) && T.EndsWith(TEXT(">")))
+	{
+		// struct<Foo> → FFoo. User-defined structs also land here; they'll need
+		// a F prefix too since UE emits them as USTRUCT with an F prefix.
+		const FString Inner = T.Mid(7, T.Len() - 8);
+		// Avoid double-F (reader sometimes emits "FName_0" style, unlikely but safe).
+		T = Inner.StartsWith(TEXT("F")) ? Inner : (TEXT("F") + Inner);
+	}
+	else
+	{
+		T = BPTypeToCppType(T);
+	}
+
+	if (bIsRef)   { T += TEXT("&"); }
+	if (bIsConst) { T = TEXT("const ") + T; }
+	return T;
+}
+
+// Pick the correct DECLARE_DYNAMIC_MULTICAST_DELEGATE macro suffix for N params.
+// UE4.27 provides OneParam through NineParams; 0 params is the no-suffix macro.
+static FString DelegateMacroForArity(int32 ParamCount)
+{
+	switch (ParamCount)
+	{
+		case 0: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE");
+		case 1: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam");
+		case 2: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams");
+		case 3: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams");
+		case 4: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams");
+		case 5: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams");
+		case 6: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_SixParams");
+		case 7: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_SevenParams");
+		case 8: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_EightParams");
+		case 9: return TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE_NineParams");
+		default: return FString::Printf(TEXT("DECLARE_DYNAMIC_MULTICAST_DELEGATE /* unsupported arity %d */"), ParamCount);
+	}
+}
+
 //------------------------------------------------------------------------------
 
 UBlueprintExportCommandlet::UBlueprintExportCommandlet()
@@ -779,6 +856,160 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppAuditToJson(const TArray<
 void UBlueprintExportCommandlet::BuildCppAudit(const TArray<FString>& SearchPaths)
 {
 	OutputJson(CppAuditToJson(SearchPaths));
+}
+
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category)
+{
+	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();
+	FBlueprintExportData Data = Reader->ExportBlueprint(BlueprintPath);
+
+	if (Data.BlueprintName.IsEmpty())
+	{
+		TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+		Err->SetBoolField(TEXT("success"), false);
+		Err->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
+		return Err;
+	}
+
+	TSet<FString> Filter;
+	for (const FString& V : VarsFilter) { Filter.Add(V); }
+	const bool bFiltering = Filter.Num() > 0;
+
+	// Default category derivation: either the explicit override, each var's own
+	// Category, or "Default" as last resort. BP asset name makes a poor default
+	// because it often includes "_BP" suffix that shouldn't appear in C++.
+	auto PickCategory = [&](const FString& VarCategory) -> FString
+	{
+		if (!Category.IsEmpty()) { return Category; }
+		if (!VarCategory.IsEmpty() && VarCategory != TEXT("Default")) { return VarCategory; }
+		return TEXT("Default");
+	};
+
+	FString DeclareBlock;  // DECLARE_DYNAMIC_MULTICAST_DELEGATE_* lines (outside class body)
+	FString UPropBlock;    // UPROPERTY() + field declarations (inside class body)
+	int32 VarCount = 0;
+	int32 DelegateCount = 0;
+	TArray<TSharedPtr<FJsonValue>> MissingJson;
+
+	// --- Regular member variables (non-delegate) ---
+	TSet<FString> SeenVars;
+	for (const FBlueprintVariableData& Var : Data.Variables)
+	{
+		if (bFiltering && !Filter.Contains(Var.VariableName)) { continue; }
+		SeenVars.Add(Var.VariableName);
+
+		if (Var.bIsTypeBroken)
+		{
+			UPropBlock += FString::Printf(
+				TEXT("// BROKEN TYPE — '%s' references a deleted type (%s); skip or replace\n\n"),
+				*Var.VariableName, *Var.VariableType);
+			continue;
+		}
+
+		// Skip anything that smells like a multicast delegate — those come through
+		// EventDispatchers and need DECLARE macros, handled below.
+		if (Var.VariableType.Contains(TEXT("mcdelegate")) || Var.VariableType.Contains(TEXT("MulticastDelegate")))
+		{
+			continue;
+		}
+
+		const FString CppType = BPTypeToCppTypeRich(Var.VariableType);
+
+		TArray<FString> Specifiers;
+		Specifiers.Add(Var.bIsPublic ? TEXT("BlueprintReadWrite") : TEXT("BlueprintReadOnly"));
+		if (Var.bIsReplicated) { Specifiers.Add(TEXT("Replicated")); }
+		Specifiers.Add(FString::Printf(TEXT("Category = \"%s\""), *PickCategory(Var.Category)));
+
+		UPropBlock += FString::Printf(TEXT("UPROPERTY(%s)\n"), *FString::Join(Specifiers, TEXT(", ")));
+
+		// Default value: emit a `= <value>` only for numeric/bool primitives where
+		// it's safe inline. Skip for strings, FVector, structs — those need ctor init.
+		FString DefaultSuffix;
+		if (!Var.DefaultValue.IsEmpty())
+		{
+			const bool bIsPrimitive =
+				Var.VariableType == TEXT("bool") ||
+				Var.VariableType == TEXT("int") || Var.VariableType == TEXT("integer") ||
+				Var.VariableType == TEXT("int64") ||
+				Var.VariableType == TEXT("float") || Var.VariableType == TEXT("real") ||
+				Var.VariableType == TEXT("byte");
+			if (bIsPrimitive)
+			{
+				DefaultSuffix = FString::Printf(TEXT(" = %s"), *Var.DefaultValue);
+			}
+		}
+		UPropBlock += FString::Printf(TEXT("%s %s%s;\n\n"), *CppType, *Var.VariableName, *DefaultSuffix);
+		++VarCount;
+	}
+
+	// --- Event dispatchers (multicast delegates) ---
+	for (const FBlueprintDispatcherData& Disp : Data.EventDispatchers)
+	{
+		if (bFiltering && !Filter.Contains(Disp.DispatcherName)) { continue; }
+		SeenVars.Add(Disp.DispatcherName);
+
+		const FString SigType = FString::Printf(TEXT("F%sSignature"), *Disp.DispatcherName);
+		const int32 Arity = Disp.Parameters.Num();
+
+		// DECLARE macro: "DECLARE_..._NParams(FFooSignature, Type1, Name1, Type2, Name2, ...)"
+		FString Declare = FString::Printf(TEXT("%s(%s"), *DelegateMacroForArity(Arity), *SigType);
+		for (const FBlueprintPinData& P : Disp.Parameters)
+		{
+			Declare += FString::Printf(TEXT(", %s, %s"), *BPTypeToCppTypeRich(P.PinType), *P.PinName);
+		}
+		Declare += TEXT(");\n");
+		DeclareBlock += Declare;
+
+		// UPROPERTY: BlueprintAssignable + BlueprintCallable is the safe-default
+		// combo — Assignable alone compiles but BP K2Node_CallDelegate fails with
+		// "Event Dispatcher is not BlueprintCallable" at compile time.
+		TArray<FString> Specifiers = {
+			TEXT("BlueprintAssignable"),
+			TEXT("BlueprintCallable"),
+			FString::Printf(TEXT("Category = \"%s\""), *PickCategory(Disp.Category))
+		};
+		UPropBlock += FString::Printf(TEXT("UPROPERTY(%s)\n"), *FString::Join(Specifiers, TEXT(", ")));
+		UPropBlock += FString::Printf(TEXT("%s %s;\n\n"), *SigType, *Disp.DispatcherName);
+		++DelegateCount;
+	}
+
+	// --- Filter diagnostics: caller-requested names that don't exist on this BP ---
+	if (bFiltering)
+	{
+		for (const FString& Requested : VarsFilter)
+		{
+			if (!SeenVars.Contains(Requested))
+			{
+				TSharedPtr<FJsonObject> M = MakeShareable(new FJsonObject);
+				M->SetStringField(TEXT("requested"), Requested);
+				MissingJson.Add(MakeShareable(new FJsonValueObject(M)));
+			}
+		}
+	}
+
+	// Assemble final text block: DECLARE block first (belongs outside class body),
+	// blank line, then the UPROPERTY block (inside class body).
+	FString Code;
+	if (!DeclareBlock.IsEmpty())
+	{
+		Code += TEXT("// --- Delegate signatures (place above the UCLASS) ---\n");
+		Code += DeclareBlock;
+		Code += TEXT("\n");
+	}
+	if (!UPropBlock.IsEmpty())
+	{
+		Code += TEXT("// --- UPROPERTY declarations (inside the UCLASS body) ---\n");
+		Code += UPropBlock;
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("blueprint_path"), BlueprintPath);
+	Result->SetNumberField(TEXT("var_count"), VarCount);
+	Result->SetNumberField(TEXT("delegate_count"), DelegateCount);
+	Result->SetStringField(TEXT("code"), Code);
+	Result->SetArrayField(TEXT("missing"), MissingJson);
+	return Result;
 }
 
 TSharedPtr<FJsonObject> UBlueprintExportCommandlet::SearchInBlueprintsToJson(const FString& Query, const TArray<FString>& SearchPaths)
