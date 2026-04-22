@@ -15,9 +15,13 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
+#include "K2Node_CallFunction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/Script.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "FileHelpers.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -158,12 +162,137 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::FunctionAdd(const TSharedPtr<FJsonObj
 // edit.function.remove
 //------------------------------------------------------------------------------
 
+// Walk every loaded BP under SearchPaths and retarget K2Node_CallFunction refs
+// that call the removed function on the lifted BP's class. Rewrites
+// FunctionReference to point at NewCppName — name-resolve then walks the parent
+// chain to the new C++ UFUNCTION on the parent class. Mirrors the shape of
+// LiftHelpers::RetargetExternalVarRefs; intentionally skips ReconstructNode
+// (UE's compile-time reconciliation handles pin re-allocation).
+struct FFunctionRetargetStats
+{
+	int32 NodesRetargeted = 0;
+	TArray<FString> AffectedBpPaths;
+};
+
+static FFunctionRetargetStats RetargetExternalFunctionCalls(
+	UBlueprint* LiftedBlueprint,
+	const FName OldFuncName,
+	const FName NewFuncName,
+	const TArray<FString>& SearchPaths,
+	TArray<UPackage*>& OutPackagesToSave)
+{
+	FFunctionRetargetStats Stats;
+	if (!LiftedBlueprint || !LiftedBlueprint->GeneratedClass || SearchPaths.Num() == 0)
+	{
+		return Stats;
+	}
+
+	UClass* LiftedClass = LiftedBlueprint->GeneratedClass;
+	UClass* LiftedSkelClass = LiftedBlueprint->SkeletonGeneratedClass;
+
+	FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AR = ARM.Get();
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> Assets;
+		AR.GetAssetsByPath(FName(*SearchPath), Assets, /*bRecursive=*/true);
+
+		for (const FAssetData& Data : Assets)
+		{
+			if (!Data.AssetClass.ToString().Contains(TEXT("Blueprint"))) { continue; }
+			UBlueprint* BP = Cast<UBlueprint>(Data.GetAsset());
+			if (!BP || !BP->GeneratedClass) { continue; }
+			if (BP->GeneratedClass->HasAnyClassFlags(CLASS_NewerVersionExists)) { continue; }
+			if (BP == LiftedBlueprint) { continue; }
+
+			bool bAnyChange = false;
+
+#if WITH_EDITORONLY_DATA
+			TArray<UEdGraph*> AllGraphs;
+			AllGraphs.Append(BP->FunctionGraphs);
+			AllGraphs.Append(BP->UbergraphPages);
+			AllGraphs.Append(BP->MacroGraphs);
+			AllGraphs.Append(BP->DelegateSignatureGraphs);
+			for (int32 i = 0; i < AllGraphs.Num(); ++i)
+			{
+				if (!AllGraphs[i]) { continue; }
+				AllGraphs.Append(AllGraphs[i]->SubGraphs);
+			}
+
+			for (UEdGraph* Graph : AllGraphs)
+			{
+				if (!Graph) { continue; }
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+					if (!CallNode) { continue; }
+
+					const FName CurName = CallNode->FunctionReference.GetMemberName();
+					if (CurName != OldFuncName) { continue; }
+
+					// Broad match — same semantics as variable retarget.
+					UClass* RefParent = CallNode->FunctionReference.GetMemberParentClass(BP->SkeletonGeneratedClass);
+					const bool bIsRefToLifted =
+						RefParent == nullptr ||
+						RefParent == LiftedClass ||
+						RefParent == LiftedSkelClass ||
+						(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
+					if (!bIsRefToLifted) { continue; }
+
+					CallNode->FunctionReference.SetExternalMember(NewFuncName, LiftedClass);
+					++Stats.NodesRetargeted;
+					bAnyChange = true;
+				}
+			}
+#endif // WITH_EDITORONLY_DATA
+
+			if (bAnyChange)
+			{
+				FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+				Stats.AffectedBpPaths.Add(BP->GetPathName());
+				if (UPackage* Pkg = BP->GetOutermost())
+				{
+					OutPackagesToSave.AddUnique(Pkg);
+				}
+			}
+		}
+	}
+
+	return Stats;
+}
+
 TSharedPtr<FJsonObject> FBlueprintEditOps::FunctionRemove(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Path, Name;
 	TSharedPtr<FJsonObject> Err;
 	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
 	if (!RequireString(Params, TEXT("name"), Name, Err)) { return Err; }
+
+	// Optional: retarget external K2Node_CallFunction refs from (BPClass, Name)
+	// to (BPClass, retarget_to) after the remove. Use when a BP function has
+	// been lifted to a C++ UFUNCTION with a different name (e.g. "Play SFX"
+	// display-name lifted to C++ PlaySFX) — without retargeting, external
+	// callers orphan with "Could not find a function named 'Play SFX'".
+	FString RetargetTo;
+	Params->TryGetStringField(TEXT("retarget_external_to"), RetargetTo);
+
+	bool bNoScanExternal = false;
+	Params->TryGetBoolField(TEXT("no_scan_external"), bNoScanExternal);
+
+	TArray<FString> ExternalSearchPaths;
+	const TArray<TSharedPtr<FJsonValue>>* ScopeArray = nullptr;
+	if (Params->TryGetArrayField(TEXT("scope"), ScopeArray) && ScopeArray)
+	{
+		for (const TSharedPtr<FJsonValue>& V : *ScopeArray)
+		{
+			ExternalSearchPaths.Add(V->AsString());
+		}
+	}
+	if (ExternalSearchPaths.Num() == 0)
+	{
+		ExternalSearchPaths.Add(TEXT("/Game/"));
+	}
 
 	FString LoadError;
 	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
@@ -177,8 +306,48 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::FunctionRemove(const TSharedPtr<FJson
 
 	FBlueprintEditorUtils::RemoveGraph(Blueprint, Graph, EGraphRemoveFlags::Recompile);
 
+	int32 ExternalNodesRetargeted = 0;
+	TArray<TSharedPtr<FJsonValue>> AffectedBpsJson;
+	TArray<FString> SaveFailures;
+	if (!RetargetTo.IsEmpty() && !bNoScanExternal)
+	{
+		TArray<UPackage*> PackagesToSave;
+		FFunctionRetargetStats Stats = RetargetExternalFunctionCalls(
+			Blueprint, FName(*Name), FName(*RetargetTo), ExternalSearchPaths, PackagesToSave);
+		ExternalNodesRetargeted = Stats.NodesRetargeted;
+		for (const FString& BpPath : Stats.AffectedBpPaths)
+		{
+			AffectedBpsJson.Add(MakeShareable(new FJsonValueString(BpPath)));
+		}
+		if (PackagesToSave.Num() > 0)
+		{
+			const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty=*/true);
+			if (!bSaved)
+			{
+				SaveFailures.Add(TEXT("One or more retargeted external BP packages failed to save"));
+			}
+		}
+	}
+
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("name"), Name);
+	if (!RetargetTo.IsEmpty())
+	{
+		Response->SetStringField(TEXT("retarget_external_to"), RetargetTo);
+		Response->SetBoolField(TEXT("scanned_external"), !bNoScanExternal);
+		Response->SetNumberField(TEXT("external_nodes_retargeted"), ExternalNodesRetargeted);
+		Response->SetNumberField(TEXT("external_bps_affected"), AffectedBpsJson.Num());
+		Response->SetArrayField(TEXT("external_bps"), AffectedBpsJson);
+	}
+	if (SaveFailures.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> Warnings;
+		for (const FString& W : SaveFailures)
+		{
+			Warnings.Add(MakeShareable(new FJsonValueString(W)));
+		}
+		Response->SetArrayField(TEXT("warnings"), Warnings);
+	}
 	return Response;
 }
 

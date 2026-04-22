@@ -260,6 +260,13 @@ digbp edit function rename    --path=/Game/BP_Foo --old-name=Foo --new-name=Bar
 digbp edit function set-flags --path=/Game/BP_Foo --function=Bar --pure --const
 digbp edit function remove    --path=/Game/BP_Foo --name=Bar
 
+# Remove + retarget external K2Node_CallFunction refs (function-lift companion
+# to variable lift). After removing a BP function that's now a C++ UFUNCTION
+# on the parent class with a different identifier (e.g. 'Play SFX' -> PlaySFX),
+# this scans --scope for external callers and rewrites their FunctionReference.
+# Same --no-scan-external escape hatch as variable lift.
+digbp edit function remove --path=/Game/BP_Foo --name="Play SFX" --retarget-external-to=PlaySFX
+
 # Create an override graph for a parent-class BlueprintImplementable/NativeEvent
 digbp edit function override --path=/Game/BP_Foo --function=ReceiveBeginPlay
 ```

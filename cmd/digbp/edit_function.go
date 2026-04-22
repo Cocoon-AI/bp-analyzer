@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 )
 
@@ -101,18 +103,58 @@ func editFunctionAddCmd() *cobra.Command {
 }
 
 func editFunctionRemoveCmd() *cobra.Command {
-	var path, name string
+	var (
+		path, name     string
+		retargetTo     string
+		scope          string
+		noScanExternal bool
+	)
 	cmd := &cobra.Command{
 		Use:   "remove",
-		Short: "Remove a user function",
+		Short: "Remove a user function, optionally retargeting external K2Node_CallFunction refs",
+		Long: `Removes the named user function from the Blueprint.
+
+--retarget-external-to=<CppName>: after removing, scans --scope (default
+/Game/) for K2Node_CallFunction nodes in OTHER BPs that call this function
+on the lifted BP's class, and rewrites their FunctionReference to point at
+<CppName>. Name-resolve then walks to the C++ parent where the new UFUNCTION
+lives. Use this when lifting a BP function to a C++ UFUNCTION with a
+different name (e.g. 'Play SFX' -> 'PlaySFX'); without retargeting, external
+callers orphan with 'Could not find a function named "<OldName>"'.
+
+Pairs with 'cppgen upropertys' — same identifier-transform semantics apply
+to function names (strip spaces, PascalCase segment starts).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return callServer("edit.function.remove", map[string]interface{}{
+			params := map[string]interface{}{
 				"path": path, "name": name,
-			})
+			}
+			if retargetTo != "" {
+				params["retarget_external_to"] = retargetTo
+			}
+			if noScanExternal {
+				params["no_scan_external"] = true
+			}
+			if scope != "" {
+				parts := strings.Split(scope, ",")
+				trimmed := make([]string, 0, len(parts))
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						trimmed = append(trimmed, p)
+					}
+				}
+				if len(trimmed) > 0 {
+					params["scope"] = trimmed
+				}
+			}
+			return callServer("edit.function.remove", params)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
 	cmd.Flags().StringVar(&name, "name", "", "Function name (required)")
+	cmd.Flags().StringVar(&retargetTo, "retarget-external-to", "", "After remove, rewrite external K2Node_CallFunction refs to this UFUNCTION name (typically the C++ identifier)")
+	cmd.Flags().StringVar(&scope, "scope", "", "Comma-separated paths to scan for external callers (default: /Game/)")
+	cmd.Flags().BoolVar(&noScanExternal, "no-scan-external", false, "Skip the external scan (no effect without --retarget-external-to)")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("name")
 	return cmd

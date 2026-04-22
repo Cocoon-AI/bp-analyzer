@@ -631,89 +631,47 @@ namespace LiftHelpers
 				for (UEdGraph* Graph : AllGraphs)
 				{
 					if (!Graph) { continue; }
-					const UEdGraphSchema* Schema = Graph->GetSchema();
 
 					for (UEdGraphNode* Node : Graph->Nodes)
 					{
-						// --- K2Node_Variable retarget (with pin-link preservation) ---
+						// --- K2Node_Variable retarget ---
+						// Just update the FMemberReference and mark the BP modified.
+						// Previously tried ReconstructNode + manual pin-link restore
+						// via schema.TryCreateConnection — didn't survive UE's own
+						// compile-time ReconstructAllNodes on the external BP, which
+						// runs its own pin migration and can fight our in-memory
+						// reconstruction. Trust UE's compile-time flow: FMemberRef
+						// is now correct, UE's name-match carryover handles the rest
+						// when the external BP is next compiled. If the upcast link
+						// still drops, it's an engine-level pin-migration limit
+						// (K2Node_Variable doesn't preserve child→parent object pin
+						// links when the resolved property owner moves cross-class).
 						if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
 						{
 							const FName CurName = VarNode->VariableReference.GetMemberName();
-							// Process every lifted var — not just renames. Non-rename
-							// removes still need the pin-link-preservation pass (see
-							// VarsToProcess comment above).
 							const FName* FinalName = VarsToProcess.Find(CurName);
 							if (!FinalName) { continue; }
 
-							// Only retarget refs that point AT the lifted BP's class
-							// (or its skeleton). Other BPs with same-named vars are
-							// not ours to touch.
+							// Broad ref-to-lifted match: accepts the lifted BP's
+							// generated class, its skeleton class, any class whose
+							// ClassGeneratedBy is the lifted BP (covers REINST_ /
+							// hot-reload artifacts), and a null RefParent fallback
+							// where the stored ref couldn't be resolved (trust the
+							// name match to filter false positives, since lifted
+							// names are user-scoped).
 							UClass* RefParent = VarNode->VariableReference.GetMemberParentClass(BP->SkeletonGeneratedClass);
 							const bool bIsRefToLifted =
+								RefParent == nullptr ||
 								RefParent == LiftedClass ||
 								RefParent == LiftedSkelClass ||
 								(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
 							if (!bIsRefToLifted) { continue; }
 
-							// Snapshot every pin's LinkedTo BEFORE reconstruct. The
-							// Target pin re-types when the property's resolved owner
-							// narrows from the BP class to its C++ parent — UE drops
-							// the upcast-compatible link during reconstruct unless we
-							// restore it explicitly via the schema. Non-target pins
-							// (Value, self) are included for safety; re-attachment is
-							// a no-op if the schema rejects an incompatible pair.
-							struct FPinLinkSnapshot
-							{
-								FName PinName;
-								EEdGraphPinDirection Direction;
-								TArray<UEdGraphPin*> LinkedTo;
-							};
-							TArray<FPinLinkSnapshot> Saved;
-							for (UEdGraphPin* Pin : VarNode->Pins)
-							{
-								if (!Pin || Pin->LinkedTo.Num() == 0) { continue; }
-								FPinLinkSnapshot Snap;
-								Snap.PinName = Pin->PinName;
-								Snap.Direction = Pin->Direction;
-								Snap.LinkedTo = Pin->LinkedTo;
-								Saved.Add(MoveTemp(Snap));
-							}
-
-							// Keep MemberParentClass = LiftedClass so name resolution
-							// walks the parent chain to the new C++ UPROPERTY. For
-							// non-rename removes FinalName == CurName, so this is a
-							// no-op on the name but is still needed to force the
-							// ReconstructNode + link-restore flow below.
+							// Keep MemberParentClass = LiftedClass. Name resolution
+							// walks the parent chain to the new C++ UPROPERTY.
+							// FinalName == CurName for non-rename removes (still
+							// needed to force UE to re-resolve on next compile).
 							VarNode->VariableReference.SetExternalMember(*FinalName, LiftedClass);
-							VarNode->ReconstructNode();
-
-							// Re-wire saved links. Schema->TryCreateConnection handles
-							// upcast compatibility; if a link is no longer legal it
-							// stays dropped (rare, but ReconstructNode already broke
-							// it so we're not making things worse).
-							if (Schema)
-							{
-								for (const FPinLinkSnapshot& Snap : Saved)
-								{
-									UEdGraphPin* NewPin = nullptr;
-									for (UEdGraphPin* P : VarNode->Pins)
-									{
-										if (P && P->PinName == Snap.PinName && P->Direction == Snap.Direction)
-										{
-											NewPin = P;
-											break;
-										}
-									}
-									if (!NewPin) { continue; } // pin was removed (e.g. self on pure self-scope)
-									for (UEdGraphPin* Other : Snap.LinkedTo)
-									{
-										if (Other)
-										{
-											Schema->TryCreateConnection(NewPin, Other);
-										}
-									}
-								}
-							}
 
 							++Stats.NodesRetargeted;
 							bAnyChange = true;

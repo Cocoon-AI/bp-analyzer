@@ -192,6 +192,7 @@ digbp edit variable set-flags --path=/Game/BP --name=Health --public --replicate
 # Functions
 digbp edit function add --path=/Game/BP --name=DoStuff
 digbp edit function remove --path=/Game/BP --name=DoStuff
+digbp edit function remove --path=/Game/BP --name="Play SFX" --retarget-external-to=PlaySFX  # Retarget external K2Node_CallFunction refs
 digbp edit function rename --path=/Game/BP --old-name=Foo --new-name=Bar
 
 # Events

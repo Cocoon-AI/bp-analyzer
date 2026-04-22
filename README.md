@@ -119,7 +119,7 @@ digbp stop        # Shutdown server
 | `digbp edit variable unshadow` | Retarget `<X>_0` shadow refs back to parent `<X>`, remove shadow vars (`--dry-run`) |
 | `digbp edit variable lift` | Atomic multi-var rename-to-C++-friendly + remove, with external-BP K2Node retargeting (`--vars="A,B,C"`, `--scope=/Game/UI/`, `--no-scan-external`, `--dry-run`) |
 | `digbp edit function add` | Add a function graph |
-| `digbp edit function remove` | Remove a function |
+| `digbp edit function remove` | Remove a function (with `--retarget-external-to=<CppName>` for external K2Node_CallFunction retargeting) |
 | `digbp edit event add-custom` | Add a custom event |
 | `digbp edit event remove` | Remove an event |
 | `digbp edit dispatcher remove` | Remove an event dispatcher |
