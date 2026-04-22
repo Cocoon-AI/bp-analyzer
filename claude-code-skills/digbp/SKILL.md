@@ -226,6 +226,15 @@ digbp edit variable lift --path=/Game/BP_Foo \
 digbp edit variable lift --path=/Game/BP_Foo \
     --vars="..." --no-scan-external               # skip scan entirely (advanced)
 
+# --refresh-external-after-lift: after retargeting FMemberReference entries in
+# external BPs, also ReconstructNode every K2Node_Variable/CallFunction/Delegate
+# on each affected BP. This is the real unlock for the "Target pin no longer
+# exists" compile failure that surfaces when UE's pin re-resolution narrows
+# the Target pin type from the BP class to its C++ parent. Recommended for
+# any lift with upcast-dependent external callers.
+digbp edit variable lift --path=/Game/BP_Foo \
+    --vars="..." --refresh-external-after-lift
+
 # Recovery from the "<X>_0 shadow" trap: when a C++ UPROPERTY is added to the
 # parent class BEFORE the BP var is removed, UE renames the BP var to <X>_0
 # and retargets K2Node_VariableGet/Set + delegate nodes. Undo that:
@@ -403,9 +412,14 @@ digbp cppgen upropertys --path=/Game/UI/SDAccountInfoPanel_BP \
 #    UE4 server (digbp stop && digbp start) so it picks up the new UPROPERTYs.
 
 # 4. Atomic rename + remove. K2Node_VariableGet/Set refs auto-retarget to the
-#    now-inherited parent properties.
+#    now-inherited parent properties. --refresh-external-after-lift forces a
+#    ReconstructNode on every external-caller BP, which is the real unlock
+#    for the Target-pin-loss failure mode — without it, compile errors like
+#    "pin Target no longer exists on node Get IsLocked" can persist on
+#    external BPs even with correctly-retargeted FMemberReference entries.
 digbp edit variable lift --path=/Game/UI/SDAccountInfoPanel_BP \
-    --vars="Current XP,XP Level Threshold,OnReady"
+    --vars="Current XP,XP Level Threshold,OnReady" \
+    --refresh-external-after-lift
 digbp edit save-and-compile --path=/Game/UI/SDAccountInfoPanel_BP
 ```
 

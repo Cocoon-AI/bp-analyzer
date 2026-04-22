@@ -199,11 +199,12 @@ Use --dry-run to preview without mutating.`,
 
 func editVariableLiftCmd() *cobra.Command {
 	var (
-		path            string
-		vars            string
-		scope           string
-		dryRun          bool
-		noScanExternal  bool
+		path                      string
+		vars                      string
+		scope                     string
+		dryRun                    bool
+		noScanExternal            bool
+		refreshExternalAfterLift  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "lift",
@@ -247,6 +248,9 @@ caller compiles separately after writing the replacement C++ UPROPERTYs.`,
 			if noScanExternal {
 				params["no_scan_external"] = true
 			}
+			if refreshExternalAfterLift {
+				params["refresh_external_after_lift"] = true
+			}
 			if scope != "" {
 				scopeParts := strings.Split(scope, ",")
 				scopeTrimmed := make([]string, 0, len(scopeParts))
@@ -268,6 +272,7 @@ caller compiles separately after writing the replacement C++ UPROPERTYs.`,
 	cmd.Flags().StringVar(&scope, "scope", "", "Comma-separated paths to scan for external BP callers (default: /Game/)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report the plan without mutating the BP (also skips the external-BP scan)")
 	cmd.Flags().BoolVar(&noScanExternal, "no-scan-external", false, "Skip scanning OTHER BPs for K2Node refs to retarget (default: scan is ON)")
+	cmd.Flags().BoolVar(&refreshExternalAfterLift, "refresh-external-after-lift", false, "After retargeting, ReconstructNode every K2Node_Variable/CallFunction/Delegate on every affected external BP. Real unlock for the Target-pin-loss failure mode; recommended for migrations with upcast-dependent external callers.")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("vars")
 	return cmd

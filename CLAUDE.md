@@ -185,6 +185,7 @@ digbp edit variable lift --path=/Game/BP --vars="Current XP,XP Level Threshold" 
 digbp edit variable lift --path=/Game/BP --vars="..." --dry-run
 digbp edit variable lift --path=/Game/BP --vars="..." --scope=/Game/UI/         # Narrow external-BP scan
 digbp edit variable lift --path=/Game/BP --vars="..." --no-scan-external        # Skip external scan (verify with findvaruses first)
+digbp edit variable lift --path=/Game/BP --vars="..." --refresh-external-after-lift  # Also force-ReconstructNode on every external BP (unlock for Target-pin-loss)
 digbp edit variable set-type --path=/Game/BP --name=Health --type=int
 digbp edit variable set-default --path=/Game/BP --name=Health --value=100
 digbp edit variable set-flags --path=/Game/BP --name=Health --public --replicated

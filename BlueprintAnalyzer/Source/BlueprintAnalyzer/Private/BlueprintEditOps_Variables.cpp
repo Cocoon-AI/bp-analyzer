@@ -13,6 +13,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_Variable.h"
 #include "K2Node_BaseMCDelegate.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_ConstructObjectFromClass.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -566,8 +567,46 @@ namespace LiftHelpers
 	struct FExternalRetargetStats
 	{
 		int32 NodesRetargeted = 0;
+		int32 NodesRefreshed = 0;
 		TArray<FString> AffectedBpPaths;
 	};
+
+	// Run edit.node.refresh_variables equivalent on a BP: ReconstructNode every
+	// K2Node_Variable / CallFunction / BaseMCDelegate. Duplicates the logic
+	// from FBlueprintEditOps::NodeRefreshVariables instead of cross-calling
+	// because we're inside the lift walk and already hold the loaded BP ptr.
+	static void RefreshVarsLikeNodesOnBp(UBlueprint* BP, int32& OutCount)
+	{
+		if (!BP) { return; }
+#if WITH_EDITORONLY_DATA
+		TArray<UEdGraph*> AllGraphs;
+		AllGraphs.Append(BP->FunctionGraphs);
+		AllGraphs.Append(BP->UbergraphPages);
+		AllGraphs.Append(BP->MacroGraphs);
+		AllGraphs.Append(BP->DelegateSignatureGraphs);
+		for (int32 i = 0; i < AllGraphs.Num(); ++i)
+		{
+			if (!AllGraphs[i]) { continue; }
+			AllGraphs.Append(AllGraphs[i]->SubGraphs);
+		}
+		for (UEdGraph* Graph : AllGraphs)
+		{
+			if (!Graph) { continue; }
+			TArray<UEdGraphNode*> NodesCopy = Graph->Nodes;
+			for (UEdGraphNode* Node : NodesCopy)
+			{
+				if (!Node) { continue; }
+				if (Cast<UK2Node_Variable>(Node) ||
+				    Cast<UK2Node_CallFunction>(Node) ||
+				    Cast<UK2Node_BaseMCDelegate>(Node))
+				{
+					Node->ReconstructNode();
+					++OutCount;
+				}
+			}
+		}
+#endif // WITH_EDITORONLY_DATA
+	}
 
 	// VarsToProcess: OldName -> FinalName. Populated with every lifted var
 	// (renamed OR same-name removed). Non-renamed removes still need the
@@ -580,6 +619,7 @@ namespace LiftHelpers
 		const TMap<FName, FName>& VarsToProcess,
 		const TMap<FName, FName>& RenameMap,
 		const TArray<FString>& SearchPaths,
+		bool bRefreshAfterRetarget,
 		TArray<UPackage*>& OutPackagesToSave)
 	{
 		FExternalRetargetStats Stats;
@@ -590,20 +630,13 @@ namespace LiftHelpers
 
 		UClass* LiftedClass = LiftedBlueprint->GeneratedClass;
 		UClass* LiftedSkelClass = LiftedBlueprint->SkeletonGeneratedClass;
-		// Resolve to the C++ parent so the retarget points MemberParentClass at
-		// the class that actually owns the new UPROPERTY. This avoids a chain
-		// walk at FMemberReference resolution time and lets the Target pin type
-		// derive directly from the parent class on next compile — important for
-		// UE's pin migration, which re-types pins from the stored parent class
-		// and drops upcast-compatible links during re-resolution otherwise.
-		UClass* RetargetParent = LiftedBlueprint->ParentClass;
-		if (!RetargetParent || RetargetParent->ClassGeneratedBy != nullptr)
-		{
-			// Parent class missing or itself a BP — fall back to the lifted
-			// class. External refs still stay open for edit; UE compile may
-			// or may not reconcile. Better to ship partial than nothing.
-			RetargetParent = LiftedClass;
-		}
+		// Keep MemberParentClass = LiftedClass (BP's own generated class). The
+		// gamedev v4 canary showed that pointing MemberParentClass at the C++
+		// parent didn't actually fix the Target-pin-loss issue (the real unlock
+		// is post-lift `edit node refresh-variables` — see --refresh-external-
+		// after-lift) AND broke the external_bps_affected count reporting. So
+		// we're back to the v3 behavior: retarget via the child class, let
+		// FMemberReference chain-walk to the parent at compile time.
 
 		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		IAssetRegistry& AR = ARM.Get();
@@ -681,14 +714,11 @@ namespace LiftHelpers
 								(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
 							if (!bIsRefToLifted) { continue; }
 
-							// Point MemberParentClass at the C++ parent directly.
-							// Target pin type derives from the stored parent class
-							// at compile time — pointing it at the class that
-							// actually owns the new UPROPERTY lets UE's pin
-							// migration re-type cleanly without chain-walking, and
-							// the upcast from child-class sources is handled by K2
-							// schema's autocast path.
-							VarNode->VariableReference.SetExternalMember(*FinalName, RetargetParent);
+							// Retarget via the BP's own generated class (not the C++
+							// parent — v4 experiment showed that broke counting
+							// without fixing the Target-pin issue, which is
+							// actually unlocked by post-lift refresh-variables).
+							VarNode->VariableReference.SetExternalMember(*FinalName, LiftedClass);
 
 							++Stats.NodesRetargeted;
 							bAnyChange = true;
@@ -746,6 +776,17 @@ namespace LiftHelpers
 
 				if (bAnyChange)
 				{
+					// Optional refresh pass: force-ReconstructNode every var/call/
+					// delegate node on this BP. Gamedev's v4 canary showed this is
+					// the real unlock for the Target-pin-loss failure mode —
+					// without it, compile errors like "pin Target no longer exists
+					// on node Get IsLocked" persist even with a correct
+					// FMemberReference. Running it automatically under lift is
+					// opt-in via --refresh-external-after-lift.
+					if (bRefreshAfterRetarget)
+					{
+						RefreshVarsLikeNodesOnBp(BP, Stats.NodesRefreshed);
+					}
 					FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 					Stats.AffectedBpPaths.Add(BP->GetPathName());
 					if (UPackage* Pkg = BP->GetOutermost())
@@ -782,6 +823,16 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	// who've already verified there are no cross-BP references.
 	bool bNoScanExternal = false;
 	Params->TryGetBoolField(TEXT("no_scan_external"), bNoScanExternal);
+
+	// Opt-in post-retarget refresh pass. When set, every external BP affected
+	// by this lift also gets ReconstructNode'd on its K2Node_Variable / CallFn /
+	// Delegate nodes before save. Gamedev's v4 canary showed this is the real
+	// unlock for the Target-pin-loss failure mode in UE's compile-time re-
+	// resolve; the refs-only retarget isn't always enough. Default OFF to
+	// preserve the cheap fast path; set when callers have upcast-dependent
+	// external refs (most real migrations).
+	bool bRefreshExternalAfterLift = false;
+	Params->TryGetBoolField(TEXT("refresh_external_after_lift"), bRefreshExternalAfterLift);
 
 	// Scope for the external scan. Default /Game/ covers the whole project;
 	// narrow it for speed on large trees. Only consulted if !bNoScanExternal.
@@ -892,6 +943,7 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	// pass on external K2Node_Variable refs because UE's re-resolve at external
 	// compile narrows the Target pin type and drops the upcast link.
 	int32 ExternalNodesRetargeted = 0;
+	int32 ExternalNodesRefreshed = 0;
 	TArray<TSharedPtr<FJsonValue>> AffectedBpsJson;
 	TArray<FString> SaveFailures;
 	if (VarsToProcess.Num() > 0 && !bNoScanExternal)
@@ -908,8 +960,9 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 		}
 		else
 		{
-			Stats = LiftHelpers::RetargetExternalVarRefs(Blueprint, VarsToProcess, RenameMap, ExternalSearchPaths, PackagesToSave);
+			Stats = LiftHelpers::RetargetExternalVarRefs(Blueprint, VarsToProcess, RenameMap, ExternalSearchPaths, bRefreshExternalAfterLift, PackagesToSave);
 			ExternalNodesRetargeted = Stats.NodesRetargeted;
+			ExternalNodesRefreshed = Stats.NodesRefreshed;
 			for (const FString& BpPath : Stats.AffectedBpPaths)
 			{
 				AffectedBpsJson.Add(MakeShareable(new FJsonValueString(BpPath)));
@@ -938,6 +991,8 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	Response->SetNumberField(TEXT("external_nodes_retargeted"), ExternalNodesRetargeted);
 	Response->SetNumberField(TEXT("external_bps_affected"), AffectedBpsJson.Num());
 	Response->SetArrayField(TEXT("external_bps"), AffectedBpsJson);
+	Response->SetBoolField(TEXT("refreshed_external_after_lift"), bRefreshExternalAfterLift && !bNoScanExternal && VarsToProcess.Num() > 0);
+	Response->SetNumberField(TEXT("external_nodes_refreshed"), ExternalNodesRefreshed);
 
 	// Warnings list — non-fatal conditions the caller should see.
 	TArray<TSharedPtr<FJsonValue>> Warnings;
