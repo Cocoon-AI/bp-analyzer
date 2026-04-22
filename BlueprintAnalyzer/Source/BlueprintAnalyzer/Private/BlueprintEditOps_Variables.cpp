@@ -13,6 +13,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_Variable.h"
 #include "K2Node_BaseMCDelegate.h"
+#include "K2Node_ConstructObjectFromClass.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/Class.h"
@@ -568,14 +569,21 @@ namespace LiftHelpers
 		TArray<FString> AffectedBpPaths;
 	};
 
+	// VarsToProcess: OldName -> FinalName. Populated with every lifted var
+	// (renamed OR same-name removed). Non-renamed removes still need the
+	// pin-link-preservation pass because UE's own re-resolve at external-BP
+	// compile time narrows the K2Node_Variable Target pin from the lifted BP
+	// class to its C++ parent and drops the upcast-compatible link — same root
+	// cause as the rename case, just deferred to the next external compile.
 	static FExternalRetargetStats RetargetExternalVarRefs(
 		UBlueprint* LiftedBlueprint,
+		const TMap<FName, FName>& VarsToProcess,
 		const TMap<FName, FName>& RenameMap,
 		const TArray<FString>& SearchPaths,
 		TArray<UPackage*>& OutPackagesToSave)
 	{
 		FExternalRetargetStats Stats;
-		if (RenameMap.Num() == 0 || SearchPaths.Num() == 0 || !LiftedBlueprint || !LiftedBlueprint->GeneratedClass)
+		if (VarsToProcess.Num() == 0 || SearchPaths.Num() == 0 || !LiftedBlueprint || !LiftedBlueprint->GeneratedClass)
 		{
 			return Stats;
 		}
@@ -623,31 +631,140 @@ namespace LiftHelpers
 				for (UEdGraph* Graph : AllGraphs)
 				{
 					if (!Graph) { continue; }
+					const UEdGraphSchema* Schema = Graph->GetSchema();
+
 					for (UEdGraphNode* Node : Graph->Nodes)
 					{
-						UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node);
-						if (!VarNode) { continue; }
+						// --- K2Node_Variable retarget (with pin-link preservation) ---
+						if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
+						{
+							const FName CurName = VarNode->VariableReference.GetMemberName();
+							// Process every lifted var — not just renames. Non-rename
+							// removes still need the pin-link-preservation pass (see
+							// VarsToProcess comment above).
+							const FName* FinalName = VarsToProcess.Find(CurName);
+							if (!FinalName) { continue; }
 
-						const FName CurName = VarNode->VariableReference.GetMemberName();
-						const FName* NewName = RenameMap.Find(CurName);
-						if (!NewName) { continue; }
+							// Only retarget refs that point AT the lifted BP's class
+							// (or its skeleton). Other BPs with same-named vars are
+							// not ours to touch.
+							UClass* RefParent = VarNode->VariableReference.GetMemberParentClass(BP->SkeletonGeneratedClass);
+							const bool bIsRefToLifted =
+								RefParent == LiftedClass ||
+								RefParent == LiftedSkelClass ||
+								(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
+							if (!bIsRefToLifted) { continue; }
 
-						// Only retarget refs that point AT the lifted BP's class
-						// (or its skeleton). Other BPs with same-named vars are
-						// not ours to touch.
-						UClass* RefParent = VarNode->VariableReference.GetMemberParentClass(BP->SkeletonGeneratedClass);
-						const bool bIsRefToLifted =
-							RefParent == LiftedClass ||
-							RefParent == LiftedSkelClass ||
-							(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
-						if (!bIsRefToLifted) { continue; }
+							// Snapshot every pin's LinkedTo BEFORE reconstruct. The
+							// Target pin re-types when the property's resolved owner
+							// narrows from the BP class to its C++ parent — UE drops
+							// the upcast-compatible link during reconstruct unless we
+							// restore it explicitly via the schema. Non-target pins
+							// (Value, self) are included for safety; re-attachment is
+							// a no-op if the schema rejects an incompatible pair.
+							struct FPinLinkSnapshot
+							{
+								FName PinName;
+								EEdGraphPinDirection Direction;
+								TArray<UEdGraphPin*> LinkedTo;
+							};
+							TArray<FPinLinkSnapshot> Saved;
+							for (UEdGraphPin* Pin : VarNode->Pins)
+							{
+								if (!Pin || Pin->LinkedTo.Num() == 0) { continue; }
+								FPinLinkSnapshot Snap;
+								Snap.PinName = Pin->PinName;
+								Snap.Direction = Pin->Direction;
+								Snap.LinkedTo = Pin->LinkedTo;
+								Saved.Add(MoveTemp(Snap));
+							}
 
-						// Keep MemberParentClass = LiftedClass so name resolution
-						// walks the parent chain to the new C++ UPROPERTY.
-						VarNode->VariableReference.SetExternalMember(*NewName, LiftedClass);
-						VarNode->ReconstructNode();
-						++Stats.NodesRetargeted;
-						bAnyChange = true;
+							// Keep MemberParentClass = LiftedClass so name resolution
+							// walks the parent chain to the new C++ UPROPERTY. For
+							// non-rename removes FinalName == CurName, so this is a
+							// no-op on the name but is still needed to force the
+							// ReconstructNode + link-restore flow below.
+							VarNode->VariableReference.SetExternalMember(*FinalName, LiftedClass);
+							VarNode->ReconstructNode();
+
+							// Re-wire saved links. Schema->TryCreateConnection handles
+							// upcast compatibility; if a link is no longer legal it
+							// stays dropped (rare, but ReconstructNode already broke
+							// it so we're not making things worse).
+							if (Schema)
+							{
+								for (const FPinLinkSnapshot& Snap : Saved)
+								{
+									UEdGraphPin* NewPin = nullptr;
+									for (UEdGraphPin* P : VarNode->Pins)
+									{
+										if (P && P->PinName == Snap.PinName && P->Direction == Snap.Direction)
+										{
+											NewPin = P;
+											break;
+										}
+									}
+									if (!NewPin) { continue; } // pin was removed (e.g. self on pure self-scope)
+									for (UEdGraphPin* Other : Snap.LinkedTo)
+									{
+										if (Other)
+										{
+											Schema->TryCreateConnection(NewPin, Other);
+										}
+									}
+								}
+							}
+
+							++Stats.NodesRetargeted;
+							bAnyChange = true;
+							continue;
+						}
+
+						// --- K2Node_ConstructObjectFromClass (CreateWidget, SpawnActor, ...) ---
+						// These auto-generate input pins from the target class's
+						// ExposeOnSpawn UPROPERTYs and carry over serialized pin values
+						// across reconstruct by matching PinName. When we rename a var
+						// (e.g. "Is Locked" -> "IsLocked"), the external BP's
+						// CreateWidget node has a pin named "Is Locked" with a value
+						// or link. After reconstruct, the new pin is named "IsLocked"
+						// — the old "Is Locked" pin becomes orphan and the compile
+						// errors with "Input pin <OldName> no longer exists".
+						// Fix: mutate Pin->PinName in place BEFORE reconstruct so UE's
+						// name-match carryover preserves value + link.
+						if (UK2Node_ConstructObjectFromClass* SpawnNode = Cast<UK2Node_ConstructObjectFromClass>(Node))
+						{
+							UEdGraphPin* ClassPin = SpawnNode->GetClassPin();
+							if (!ClassPin) { continue; }
+							UClass* SpawnClass = Cast<UClass>(ClassPin->DefaultObject);
+							if (!SpawnClass) { continue; }
+
+							// Match spawn-target against the lifted class chain. Any
+							// subclass of the lifted BP that inherits the renamed
+							// UPROPERTYs still exposes them via the spawn pin set.
+							const bool bSpawnsLifted =
+								SpawnClass == LiftedClass ||
+								SpawnClass == LiftedSkelClass ||
+								SpawnClass->IsChildOf(LiftedClass) ||
+								(LiftedSkelClass && SpawnClass->IsChildOf(LiftedSkelClass));
+							if (!bSpawnsLifted) { continue; }
+
+							bool bAnyPinRenamed = false;
+							for (UEdGraphPin* Pin : SpawnNode->Pins)
+							{
+								if (!Pin) { continue; }
+								const FName* NewName = RenameMap.Find(Pin->PinName);
+								if (!NewName) { continue; }
+								Pin->PinName = *NewName;
+								bAnyPinRenamed = true;
+								++Stats.NodesRetargeted;
+							}
+							if (bAnyPinRenamed)
+							{
+								SpawnNode->ReconstructNode();
+								bAnyChange = true;
+							}
+							continue;
+						}
 					}
 				}
 #endif // WITH_EDITORONLY_DATA
@@ -723,9 +840,17 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	int32 Renamed = 0;
 	int32 Removed = 0;
 
-	// OldName -> NewName for every var that's actually being renamed. Used to
-	// drive the external BP scan once the local lift is done.
+	// OldName -> NewName for every var that's actually being renamed. Drives
+	// (a) the external ConstructObjectFromClass pin rename and (b) the external
+	// K2Node_Variable retarget's name swap.
 	TMap<FName, FName> RenameMap;
+
+	// OldName -> FinalName for EVERY lifted var (renames AND same-name removes).
+	// Non-rename removes still trigger the external K2Node_Variable pin-link-
+	// preservation pass — gamedev's canary on CL 15944 surfaced that UE's own
+	// re-resolve narrows the Target pin type and drops the upcast link even
+	// without a rename.
+	TMap<FName, FName> VarsToProcess;
 
 	for (const TSharedPtr<FJsonValue>& Val : *VarsArray)
 	{
@@ -770,6 +895,9 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 		{
 			RenameMap.Add(CurName, FinalName);
 		}
+		// Record every lifted var (renamed or same-name) so the external
+		// retargeter can preserve pin links on both paths.
+		VarsToProcess.Add(CurName, FinalName);
 
 		if (!bDryRun)
 		{
@@ -784,33 +912,28 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 		LiftedJson.Add(MakeShareable(new FJsonValueObject(LiftItem)));
 	}
 
-	// External BP retargeting. Only needed when at least one var was renamed —
-	// same-name removes leave external FMember refs pointing at a name that
-	// (now) lives on the C++ parent class, so name resolution still succeeds.
+	// External BP retargeting. Needed whenever any var was lifted (rename or
+	// same-name remove). Non-rename removes still need a pin-link-preservation
+	// pass on external K2Node_Variable refs because UE's re-resolve at external
+	// compile narrows the Target pin type and drops the upcast link.
 	int32 ExternalNodesRetargeted = 0;
 	TArray<TSharedPtr<FJsonValue>> AffectedBpsJson;
 	TArray<FString> SaveFailures;
-	if (RenameMap.Num() > 0 && !bNoScanExternal)
+	if (VarsToProcess.Num() > 0 && !bNoScanExternal)
 	{
 		TArray<UPackage*> PackagesToSave;
 		LiftHelpers::FExternalRetargetStats Stats;
 		if (bDryRun)
 		{
-			// Dry-run: walk + count, but don't mutate. Run with empty save list;
-			// the scan itself mutates nothing when we abort before SetExternalMember.
-			// Cheaper to special-case here than duplicate the walk logic.
-			// -- Actually simplest: run the real walk on a scratch Blueprint clone?
-			// No — just do the walk in-place and skip the save. The SetExternalMember
-			// mutations are undone by not saving (in-memory only), but could leak
-			// dirty state. Trade: honor dry-run by counting only.
-			// Implementation: signal dry-run via empty RenameMap in a second call? No.
-			// Simpler: emit a warning that dry-run doesn't enumerate externals, and
-			// ask the user to run without --dry-run for the real count.
-			// See response.warnings below.
+			// Dry-run skips the external scan. Honoring dry-run in the walker
+			// would mean either (a) duplicating the walk logic to count without
+			// mutating, or (b) mutating in memory then abandoning. Both are
+			// worse than a plain "run without --dry-run for real numbers"
+			// warning, emitted below via response.warnings.
 		}
 		else
 		{
-			Stats = LiftHelpers::RetargetExternalVarRefs(Blueprint, RenameMap, ExternalSearchPaths, PackagesToSave);
+			Stats = LiftHelpers::RetargetExternalVarRefs(Blueprint, VarsToProcess, RenameMap, ExternalSearchPaths, PackagesToSave);
 			ExternalNodesRetargeted = Stats.NodesRetargeted;
 			for (const FString& BpPath : Stats.AffectedBpPaths)
 			{
@@ -836,22 +959,22 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableLift(const TSharedPtr<FJsonOb
 	Response->SetArrayField(TEXT("missing"), MissingJson);
 	Response->SetNumberField(TEXT("renamed"), Renamed);
 	Response->SetNumberField(TEXT("removed"), Removed);
-	Response->SetBoolField(TEXT("scanned_external"), !bNoScanExternal && RenameMap.Num() > 0);
+	Response->SetBoolField(TEXT("scanned_external"), !bNoScanExternal && VarsToProcess.Num() > 0);
 	Response->SetNumberField(TEXT("external_nodes_retargeted"), ExternalNodesRetargeted);
 	Response->SetNumberField(TEXT("external_bps_affected"), AffectedBpsJson.Num());
 	Response->SetArrayField(TEXT("external_bps"), AffectedBpsJson);
 
 	// Warnings list — non-fatal conditions the caller should see.
 	TArray<TSharedPtr<FJsonValue>> Warnings;
-	if (bDryRun && RenameMap.Num() > 0 && !bNoScanExternal)
+	if (bDryRun && VarsToProcess.Num() > 0 && !bNoScanExternal)
 	{
 		Warnings.Add(MakeShareable(new FJsonValueString(
 			TEXT("dry-run skips external-BP scan; rerun without --dry-run for the actual retargeting + save"))));
 	}
-	if (bNoScanExternal && RenameMap.Num() > 0)
+	if (bNoScanExternal && VarsToProcess.Num() > 0)
 	{
 		Warnings.Add(MakeShareable(new FJsonValueString(
-			TEXT("no_scan_external is set and at least one var was renamed; external callers may have orphan refs — verify with `digbp findvaruses --var=<OldName>`"))));
+			TEXT("no_scan_external is set and at least one var was lifted; external K2Node_Variable refs and K2Node_CreateWidget pins may be orphaned — verify with `digbp findvaruses --var=<OldName>`"))));
 	}
 	for (const FString& Msg : SaveFailures)
 	{
