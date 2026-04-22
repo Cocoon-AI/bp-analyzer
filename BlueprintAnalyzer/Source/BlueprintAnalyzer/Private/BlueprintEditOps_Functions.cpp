@@ -189,6 +189,14 @@ static FFunctionRetargetStats RetargetExternalFunctionCalls(
 
 	UClass* LiftedClass = LiftedBlueprint->GeneratedClass;
 	UClass* LiftedSkelClass = LiftedBlueprint->SkeletonGeneratedClass;
+	// Point FunctionReference at the C++ parent so UE's pin migration re-types
+	// call-node pins from the new UFUNCTION signature directly. Mirrors the
+	// variable-retarget rationale in BlueprintEditOps_Variables.cpp.
+	UClass* RetargetParent = LiftedBlueprint->ParentClass;
+	if (!RetargetParent || RetargetParent->ClassGeneratedBy != nullptr)
+	{
+		RetargetParent = LiftedClass;
+	}
 
 	FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AR = ARM.Get();
@@ -240,7 +248,7 @@ static FFunctionRetargetStats RetargetExternalFunctionCalls(
 						(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
 					if (!bIsRefToLifted) { continue; }
 
-					CallNode->FunctionReference.SetExternalMember(NewFuncName, LiftedClass);
+					CallNode->FunctionReference.SetExternalMember(NewFuncName, RetargetParent);
 					++Stats.NodesRetargeted;
 					bAnyChange = true;
 				}

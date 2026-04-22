@@ -324,6 +324,11 @@ digbp edit node add-generic --path=/Game/BP_Foo --graph=EventGraph \
 # Node edits (need the GUID from a prior add response or from `digbp export`)
 digbp edit node move   --path=/Game/BP_Foo --graph=EventGraph --node-guid=<GUID> --x=500 --y=100
 digbp edit node remove --path=/Game/BP_Foo --graph=EventGraph --node-guid=<GUID>
+
+# Post-lift cleanup: ReconstructNode every K2Node_Variable/CallFunction/Delegate
+# in the BP. Use when an external lift left stale pin topology or display
+# names ("Get Is Locked" persists alongside "Get IsLocked") in caller BPs.
+digbp edit node refresh-variables --path=/Game/BP_ExternalCaller
 ```
 
 ### Pin Wiring

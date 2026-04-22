@@ -14,6 +14,7 @@ func editNodeCmd() *cobra.Command {
 		// Generic
 		editNodeRemoveCmd(),
 		editNodeRemoveBrokenCmd(),
+		editNodeRefreshVariablesCmd(),
 		editNodeMoveCmd(),
 		editNodeAddGenericCmd(),
 		// High-level builders
@@ -99,6 +100,29 @@ func editNodeRemoveBrokenCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List broken nodes without removing them")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func editNodeRefreshVariablesCmd() *cobra.Command {
+	var path string
+	cmd := &cobra.Command{
+		Use:   "refresh-variables",
+		Short: "ReconstructNode on every K2Node_Variable / CallFunction / BaseMCDelegate in the BP",
+		Long: `Forces a pin-topology + display-name rebuild on every variable-ref, function-
+call, and delegate-bind node in the target BP. Manual cleanup pass for when
+an external variable lift (or cross-BP rename) leaves stale display names
+("Get Is Locked" alongside "Get IsLocked" post-lift) or pin layouts that
+UE's own compile-time ReconstructAllNodes didn't catch.
+
+Typical use: run on each external BP in lift's external_bps[] response
+after a variable lift that had compile errors on the caller side. Then
+'edit save-and-compile' the BP to persist + verify.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("edit.node.refresh_variables", map[string]interface{}{"path": path})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
 	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }

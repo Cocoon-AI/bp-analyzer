@@ -211,6 +211,7 @@ digbp edit component remove --path=/Game/BP --name=Mesh
 digbp edit node remove --path=/Game/BP --graph=EventGraph --node-guid=GUID
 digbp edit node remove-broken --path=/Game/BP --dry-run           # Preview broken nodes
 digbp edit node remove-broken --path=/Game/BP                     # Remove all broken nodes
+digbp edit node refresh-variables --path=/Game/BP                 # ReconstructNode on all K2Node_Variable/CallFunction/Delegate (post-lift cleanup)
 digbp edit node add-function-call --path=/Game/BP --graph=EventGraph --function=PrintString
 
 # Cleanup tools

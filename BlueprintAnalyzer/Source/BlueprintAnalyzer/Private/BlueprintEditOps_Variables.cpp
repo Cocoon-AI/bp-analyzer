@@ -590,6 +590,20 @@ namespace LiftHelpers
 
 		UClass* LiftedClass = LiftedBlueprint->GeneratedClass;
 		UClass* LiftedSkelClass = LiftedBlueprint->SkeletonGeneratedClass;
+		// Resolve to the C++ parent so the retarget points MemberParentClass at
+		// the class that actually owns the new UPROPERTY. This avoids a chain
+		// walk at FMemberReference resolution time and lets the Target pin type
+		// derive directly from the parent class on next compile — important for
+		// UE's pin migration, which re-types pins from the stored parent class
+		// and drops upcast-compatible links during re-resolution otherwise.
+		UClass* RetargetParent = LiftedBlueprint->ParentClass;
+		if (!RetargetParent || RetargetParent->ClassGeneratedBy != nullptr)
+		{
+			// Parent class missing or itself a BP — fall back to the lifted
+			// class. External refs still stay open for edit; UE compile may
+			// or may not reconcile. Better to ship partial than nothing.
+			RetargetParent = LiftedClass;
+		}
 
 		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		IAssetRegistry& AR = ARM.Get();
@@ -667,11 +681,14 @@ namespace LiftHelpers
 								(RefParent && RefParent->ClassGeneratedBy == LiftedBlueprint);
 							if (!bIsRefToLifted) { continue; }
 
-							// Keep MemberParentClass = LiftedClass. Name resolution
-							// walks the parent chain to the new C++ UPROPERTY.
-							// FinalName == CurName for non-rename removes (still
-							// needed to force UE to re-resolve on next compile).
-							VarNode->VariableReference.SetExternalMember(*FinalName, LiftedClass);
+							// Point MemberParentClass at the C++ parent directly.
+							// Target pin type derives from the stored parent class
+							// at compile time — pointing it at the class that
+							// actually owns the new UPROPERTY lets UE's pin
+							// migration re-type cleanly without chain-walking, and
+							// the upcast from child-class sources is handled by K2
+							// schema's autocast path.
+							VarNode->VariableReference.SetExternalMember(*FinalName, RetargetParent);
 
 							++Stats.NodesRetargeted;
 							bAnyChange = true;

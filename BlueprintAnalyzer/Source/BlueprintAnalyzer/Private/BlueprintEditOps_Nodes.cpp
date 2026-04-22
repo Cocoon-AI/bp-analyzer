@@ -14,9 +14,12 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node.h"
 #include "K2Node_BaseAsyncTask.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "K2Node_BreakStruct.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_MakeStruct.h"
 #include "K2Node_SetFieldsInStruct.h"
+#include "K2Node_Variable.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
@@ -138,6 +141,75 @@ static bool IsNodeBroken(const UEdGraphNode* Node)
 		if (HasBrokenPinType(Pin)) { return true; }
 	}
 	return false;
+}
+
+//------------------------------------------------------------------------------
+// edit.node.refresh_variables
+//
+// Force ReconstructNode on every K2Node_Variable / K2Node_CallFunction /
+// K2Node_BaseMCDelegate in the BP. Manual cleanup for cases where an external
+// lift (variable or function) has updated FMemberReference entries but the
+// nodes' pin topology / display name hasn't caught up — usually surfaces as
+// "pin X no longer exists on node Y" compile errors or stale display names
+// ("Get Is Locked" persisting alongside "Get IsLocked" in the same BP post-
+// lift). Not atomic with lift because UE's own compile-time reconciliation
+// usually handles this; but when it doesn't, rerun this manually.
+//------------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRefreshVariables(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
+
+	FString LoadError;
+	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
+
+	int32 Refreshed = 0;
+
+#if WITH_EDITORONLY_DATA
+	TArray<UEdGraph*> AllGraphs;
+	AllGraphs.Append(Blueprint->FunctionGraphs);
+	AllGraphs.Append(Blueprint->UbergraphPages);
+	AllGraphs.Append(Blueprint->MacroGraphs);
+	AllGraphs.Append(Blueprint->DelegateSignatureGraphs);
+	// Recurse into SubGraphs so collapsed-to-function / composite nodes are
+	// covered. Matches the walk in BlueprintEditOps_Variables.cpp's lift.
+	for (int32 i = 0; i < AllGraphs.Num(); ++i)
+	{
+		if (!AllGraphs[i]) { continue; }
+		AllGraphs.Append(AllGraphs[i]->SubGraphs);
+	}
+
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) { continue; }
+		// Copy the array so ReconstructNode side effects don't invalidate our
+		// iteration — some node reconstructs spawn or remove sibling nodes.
+		TArray<UEdGraphNode*> NodesCopy = Graph->Nodes;
+		for (UEdGraphNode* Node : NodesCopy)
+		{
+			if (!Node) { continue; }
+			if (Cast<UK2Node_Variable>(Node) ||
+			    Cast<UK2Node_CallFunction>(Node) ||
+			    Cast<UK2Node_BaseMCDelegate>(Node))
+			{
+				Node->ReconstructNode();
+				++Refreshed;
+			}
+		}
+	}
+
+	if (Refreshed > 0)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+#endif // WITH_EDITORONLY_DATA
+
+	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
+	Response->SetNumberField(TEXT("nodes_refreshed"), Refreshed);
+	return Response;
 }
 
 TSharedPtr<FJsonObject> FBlueprintEditOps::NodeRemoveBroken(const TSharedPtr<FJsonObject>& Params)

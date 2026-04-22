@@ -65,6 +65,7 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 	// Generic ops (BlueprintEditOps_Nodes.cpp)
 	if (Method == TEXT("edit.node.remove"))         { return FBlueprintEditOps::NodeRemove(Params); }
 	if (Method == TEXT("edit.node.remove_broken")) { return FBlueprintEditOps::NodeRemoveBroken(Params); }
+	if (Method == TEXT("edit.node.refresh_variables")) { return FBlueprintEditOps::NodeRefreshVariables(Params); }
 	if (Method == TEXT("edit.node.move"))           { return FBlueprintEditOps::NodeMove(Params); }
 	if (Method == TEXT("edit.node.add_generic"))    { return FBlueprintEditOps::NodeAddGeneric(Params); }
 	if (Method == TEXT("edit.pin.set_default"))     { return FBlueprintEditOps::PinSetDefault(Params); }
