@@ -16,6 +16,7 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/Script.h"
@@ -543,6 +544,188 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::ExternalRewriteCall(const TSharedPtr<
 	Response->SetStringField(TEXT("old_name"), OldFuncName);
 	Response->SetStringField(TEXT("new_class"), NewClassName);
 	Response->SetStringField(TEXT("new_name"), NewFuncName);
+	Response->SetBoolField(TEXT("scanned_external"), !bNoScanExternal);
+	Response->SetNumberField(TEXT("external_nodes_retargeted"), NodesRetargeted);
+	Response->SetNumberField(TEXT("external_bps_affected"), AffectedBpPaths.Num());
+
+	TArray<TSharedPtr<FJsonValue>> BpsJson;
+	for (const FString& P : AffectedBpPaths)
+	{
+		BpsJson.Add(MakeShareable(new FJsonValueString(P)));
+	}
+	Response->SetArrayField(TEXT("external_bps"), BpsJson);
+
+	if (SaveFailures.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> Warnings;
+		for (const FString& W : SaveFailures)
+		{
+			Warnings.Add(MakeShareable(new FJsonValueString(W)));
+		}
+		Response->SetArrayField(TEXT("warnings"), Warnings);
+	}
+	return Response;
+}
+
+//------------------------------------------------------------------------------
+// edit.external.rewrite_delegate
+//
+// Cross-BP K2Node_BaseMCDelegate rewrite (Add/Remove/Clear/Call/Assign of a
+// BlueprintAssignable multicast delegate). Same shape as rewrite_call but
+// targets DelegateReference rather than FunctionReference. Use when a C++
+// multicast delegate UPROPERTY is being renamed and BP K2Node refs need to
+// follow without removing the source.
+//------------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FBlueprintEditOps::ExternalRewriteDelegate(const TSharedPtr<FJsonObject>& Params)
+{
+	FString OldClassName, OldDelegateName, NewDelegateName;
+	TSharedPtr<FJsonObject> Err;
+	if (!RequireString(Params, TEXT("old_class"), OldClassName, Err)) { return Err; }
+	if (!RequireString(Params, TEXT("old_name"), OldDelegateName, Err)) { return Err; }
+	if (!RequireString(Params, TEXT("new_name"), NewDelegateName, Err)) { return Err; }
+
+	FString NewClassName;
+	Params->TryGetStringField(TEXT("new_class"), NewClassName);
+	if (NewClassName.IsEmpty()) { NewClassName = OldClassName; }
+
+	bool bDryRun = false;
+	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+
+	bool bNoScanExternal = false;
+	Params->TryGetBoolField(TEXT("no_scan_external"), bNoScanExternal);
+
+	TArray<FString> SearchPaths;
+	const TArray<TSharedPtr<FJsonValue>>* ScopeArray = nullptr;
+	if (Params->TryGetArrayField(TEXT("scope"), ScopeArray) && ScopeArray)
+	{
+		for (const TSharedPtr<FJsonValue>& V : *ScopeArray)
+		{
+			SearchPaths.Add(V->AsString());
+		}
+	}
+	if (SearchPaths.Num() == 0)
+	{
+		SearchPaths.Add(TEXT("/Game/"));
+	}
+
+	UClass* OldClass = ExternalRewriteHelpers::FindClassByName_Ext(OldClassName);
+	if (!OldClass)
+	{
+		return FBlueprintEditHelpers::MakeEditError(FString::Printf(
+			TEXT("Could not resolve old_class '%s'"), *OldClassName));
+	}
+	UClass* NewClass = ExternalRewriteHelpers::FindClassByName_Ext(NewClassName);
+	if (!NewClass)
+	{
+		return FBlueprintEditHelpers::MakeEditError(FString::Printf(
+			TEXT("Could not resolve new_class '%s'"), *NewClassName));
+	}
+
+	const FName OldFName(*OldDelegateName);
+	const FName NewFName(*NewDelegateName);
+
+	int32 NodesRetargeted = 0;
+	TArray<FString> AffectedBpPaths;
+	TArray<UPackage*> PackagesToSave;
+	TArray<FString> SaveFailures;
+
+	if (!bNoScanExternal)
+	{
+		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AR = ARM.Get();
+
+		for (const FString& SearchPath : SearchPaths)
+		{
+			TArray<FAssetData> Assets;
+			AR.GetAssetsByPath(FName(*SearchPath), Assets, /*bRecursive=*/true);
+
+			for (const FAssetData& Data : Assets)
+			{
+				if (!Data.AssetClass.ToString().Contains(TEXT("Blueprint"))) { continue; }
+				UBlueprint* BP = Cast<UBlueprint>(Data.GetAsset());
+				if (!BP || !BP->GeneratedClass) { continue; }
+				if (BP->GeneratedClass->HasAnyClassFlags(CLASS_NewerVersionExists)) { continue; }
+
+				bool bAnyChange = false;
+
+#if WITH_EDITORONLY_DATA
+				TArray<UEdGraph*> AllGraphs;
+				AllGraphs.Append(BP->FunctionGraphs);
+				AllGraphs.Append(BP->UbergraphPages);
+				AllGraphs.Append(BP->MacroGraphs);
+				AllGraphs.Append(BP->DelegateSignatureGraphs);
+				for (int32 i = 0; i < AllGraphs.Num(); ++i)
+				{
+					if (!AllGraphs[i]) { continue; }
+					AllGraphs.Append(AllGraphs[i]->SubGraphs);
+				}
+
+				for (UEdGraph* Graph : AllGraphs)
+				{
+					if (!Graph) { continue; }
+					for (UEdGraphNode* Node : Graph->Nodes)
+					{
+						// UK2Node_BaseMCDelegate is the common base for
+						// AddDelegate / RemoveDelegate / ClearDelegate /
+						// CallDelegate / AssignDelegate (and CreateDelegate
+						// derives from a different base, not this one).
+						UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(Node);
+						if (!DelegateNode) { continue; }
+
+						const FName CurName = DelegateNode->DelegateReference.GetMemberName();
+						if (CurName != OldFName) { continue; }
+
+						UClass* RefParent = DelegateNode->DelegateReference.GetMemberParentClass(BP->SkeletonGeneratedClass);
+						const bool bIsRefToOld =
+							RefParent == OldClass ||
+							(OldClass->ClassGeneratedBy && RefParent && RefParent->ClassGeneratedBy == OldClass->ClassGeneratedBy) ||
+							(RefParent && RefParent->GetName().Contains(OldClass->GetName()));
+						if (!bIsRefToOld) { continue; }
+
+						if (!bDryRun)
+						{
+							DelegateNode->DelegateReference.SetExternalMember(NewFName, NewClass);
+						}
+						++NodesRetargeted;
+						bAnyChange = true;
+					}
+				}
+#endif // WITH_EDITORONLY_DATA
+
+				if (bAnyChange && !bDryRun)
+				{
+					FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+					AffectedBpPaths.Add(BP->GetPathName());
+					if (UPackage* Pkg = BP->GetOutermost())
+					{
+						PackagesToSave.AddUnique(Pkg);
+					}
+				}
+				else if (bAnyChange && bDryRun)
+				{
+					AffectedBpPaths.Add(BP->GetPathName());
+				}
+			}
+		}
+
+		if (!bDryRun && PackagesToSave.Num() > 0)
+		{
+			const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty=*/true);
+			if (!bSaved)
+			{
+				SaveFailures.Add(TEXT("One or more rewritten BP packages failed to save"));
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject);
+	Response->SetBoolField(TEXT("success"), true);
+	Response->SetBoolField(TEXT("dry_run"), bDryRun);
+	Response->SetStringField(TEXT("old_class"), OldClassName);
+	Response->SetStringField(TEXT("old_name"), OldDelegateName);
+	Response->SetStringField(TEXT("new_class"), NewClassName);
+	Response->SetStringField(TEXT("new_name"), NewDelegateName);
 	Response->SetBoolField(TEXT("scanned_external"), !bNoScanExternal);
 	Response->SetNumberField(TEXT("external_nodes_retargeted"), NodesRetargeted);
 	Response->SetNumberField(TEXT("external_bps_affected"), AffectedBpPaths.Num());

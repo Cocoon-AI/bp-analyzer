@@ -70,6 +70,11 @@ public:
 	// half of FunctionRemove but doesn't touch any "owning" BP.
 	static TSharedPtr<FJsonObject> ExternalRewriteCall(const TSharedPtr<FJsonObject>& Params);
 
+	// Same shape, but for K2Node_BaseMCDelegate subclasses (Add/Remove/Clear/
+	// Call/Assign delegate). Targets BlueprintAssignable multicast delegate
+	// renames in C++.
+	static TSharedPtr<FJsonObject> ExternalRewriteDelegate(const TSharedPtr<FJsonObject>& Params);
+
 	// BlueprintEditOps_Components.cpp
 	static TSharedPtr<FJsonObject> ComponentAdd(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> ComponentRemove(const TSharedPtr<FJsonObject>& Params);

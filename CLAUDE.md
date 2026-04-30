@@ -201,6 +201,9 @@ digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem --old-nam
 digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem --old-name=Get --new-class=USDClientSubsystem --new-name=Get  # Class+name rename
 digbp edit external rewrite-call --old-class=Foo --old-name=Bar --new-name=Baz --scope=/Game/UI/ --dry-run
 
+# Same shape, for BlueprintAssignable multicast delegate renames (K2Node_BaseMCDelegate refs)
+digbp edit external rewrite-delegate --old-class=USDPlayFabClientSubsystem --old-name=OnTitleNewsUpdated --new-name=OnNewsUpdated
+
 # Events
 digbp edit event add-custom --path=/Game/BP --name=OnReady
 digbp edit event remove --path=/Game/BP --name=OnReady

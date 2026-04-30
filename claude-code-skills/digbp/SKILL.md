@@ -285,6 +285,12 @@ digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem \
 digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem \
     --new-class=USDClientSubsystem --old-name=Get --new-name=Get
 
+# Same shape for BlueprintAssignable multicast delegate renames — targets
+# K2Node_AddDelegate / RemoveDelegate / ClearDelegate / CallDelegate /
+# AssignDelegate (UK2Node_BaseMCDelegate subclasses).
+digbp edit external rewrite-delegate --old-class=USDPlayFabClientSubsystem \
+    --old-name=OnTitleNewsUpdated --new-name=OnNewsUpdated
+
 # Create an override graph for a parent-class BlueprintImplementable/NativeEvent
 digbp edit function override --path=/Game/BP_Foo --function=ReceiveBeginPlay
 ```
