@@ -276,6 +276,15 @@ digbp edit function remove    --path=/Game/BP_Foo --name=Bar
 # Same --no-scan-external escape hatch as variable lift.
 digbp edit function remove --path=/Game/BP_Foo --name="Play SFX" --retarget-external-to=PlaySFX
 
+# Non-destructive cross-BP K2Node_CallFunction rewrite — for following a C++
+# UFUNCTION rename without removing the source. Pure rename:
+digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem \
+    --old-name=LoadInventory --new-name=FetchInventory --dry-run
+
+# Class + name rename in one shot:
+digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem \
+    --new-class=USDClientSubsystem --old-name=Get --new-name=Get
+
 # Create an override graph for a parent-class BlueprintImplementable/NativeEvent
 digbp edit function override --path=/Game/BP_Foo --function=ReceiveBeginPlay
 ```

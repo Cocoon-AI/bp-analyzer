@@ -37,6 +37,8 @@ Changes stage in memory until explicitly committed with 'edit compile' and
 		// Phase D (node graph editing)
 		editNodeCmd(),
 		editPinCmd(),
+		// Cross-BP rewrites
+		editExternalCmd(),
 	)
 
 	return cmd

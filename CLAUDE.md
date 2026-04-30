@@ -196,6 +196,11 @@ digbp edit function remove --path=/Game/BP --name=DoStuff
 digbp edit function remove --path=/Game/BP --name="Play SFX" --retarget-external-to=PlaySFX  # Retarget external K2Node_CallFunction refs
 digbp edit function rename --path=/Game/BP --old-name=Foo --new-name=Bar
 
+# Cross-BP rewrites (non-destructive, follow C++ renames)
+digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem --old-name=LoadInventory --new-name=FetchInventory
+digbp edit external rewrite-call --old-class=USDPlayFabClientSubsystem --old-name=Get --new-class=USDClientSubsystem --new-name=Get  # Class+name rename
+digbp edit external rewrite-call --old-class=Foo --old-name=Bar --new-name=Baz --scope=/Game/UI/ --dry-run
+
 # Events
 digbp edit event add-custom --path=/Game/BP --name=OnReady
 digbp edit event remove --path=/Game/BP --name=OnReady

@@ -120,6 +120,7 @@ digbp stop        # Shutdown server
 | `digbp edit variable lift` | Atomic multi-var rename-to-C++-friendly + remove, with external-BP K2Node retargeting (`--vars="A,B,C"`, `--scope=/Game/UI/`, `--no-scan-external`, `--dry-run`) |
 | `digbp edit function add` | Add a function graph |
 | `digbp edit function remove` | Remove a function (with `--retarget-external-to=<CppName>` for external K2Node_CallFunction retargeting) |
+| `digbp edit external rewrite-call` | Non-destructive cross-BP K2Node_CallFunction rewrite (follow a C++ UFUNCTION rename) |
 | `digbp edit event add-custom` | Add a custom event |
 | `digbp edit event remove` | Remove an event |
 | `digbp edit dispatcher remove` | Remove an event dispatcher |

@@ -64,6 +64,12 @@ public:
 	static TSharedPtr<FJsonObject> EventImplement(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> DispatcherRemove(const TSharedPtr<FJsonObject>& Params);
 
+	// Standalone external rewrite — non-destructive cross-BP function rename.
+	// Use when a C++ UFUNCTION is being renamed and BP K2Node_CallFunction
+	// refs need to follow without removing the source. Mirrors the retarget
+	// half of FunctionRemove but doesn't touch any "owning" BP.
+	static TSharedPtr<FJsonObject> ExternalRewriteCall(const TSharedPtr<FJsonObject>& Params);
+
 	// BlueprintEditOps_Components.cpp
 	static TSharedPtr<FJsonObject> ComponentAdd(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> ComponentRemove(const TSharedPtr<FJsonObject>& Params);
