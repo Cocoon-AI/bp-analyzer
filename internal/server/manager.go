@@ -294,10 +294,33 @@ func Stop(pipeName string) error {
 }
 
 // EnsureRunning starts the server if it's not already running.
+//
+// Uses a file lock around the start path so parallel digbp invocations
+// don't all try to launch UE4Editor-Cmd at once. Without the lock, N
+// concurrent calls all see IsRunning==false, all enter Start(), and
+// reapStale() in each Start treats the others' partially-launched
+// processes as stale and kills them. The lock + re-check pattern means
+// the first caller launches the server while the rest queue, then all
+// subsequent callers short-circuit on the now-running server.
 func EnsureRunning(cfg *config.Config) error {
+	// Fast path: cheap pipe ping. Avoids touching the lock for the common
+	// case where the server is already up.
 	if IsRunning(cfg.PipeName) {
 		return nil
 	}
+
+	lock, err := acquireStartLock(cfg.PipeName)
+	if err != nil {
+		return fmt.Errorf("digbp: failed to acquire server-start lock: %w", err)
+	}
+	defer lock.Release()
+
+	// Re-check under lock. Another digbp process may have started the
+	// server while we were blocked on lock acquisition.
+	if IsRunning(cfg.PipeName) {
+		return nil
+	}
+
 	fmt.Fprintf(os.Stderr, "digbp: server not running, starting...\n")
 	return Start(cfg)
 }
