@@ -54,11 +54,18 @@ namespace
 			FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*Parts[i]));
 			if (!Prop)
 			{
+				// UE4.27 has no TArray::Slice — manually rebuild the path-so-far.
+				FString PathSoFar;
+				for (int32 j = 0; j <= i; ++j)
+				{
+					if (j > 0) { PathSoFar += TEXT("."); }
+					PathSoFar += Parts[j];
+				}
 				OutError = FString::Printf(
 					TEXT("Property '%s' not found on %s (path so far: %s)"),
 					*Parts[i],
 					*CurrentStruct->GetName(),
-					*FString::Join(Parts.Slice(0, i + 1), TEXT(".")));
+					*PathSoFar);
 				return false;
 			}
 
