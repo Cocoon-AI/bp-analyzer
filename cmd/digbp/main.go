@@ -98,6 +98,23 @@ func printResult(result json.RawMessage) error {
 	return nil
 }
 
+// normalizeOutPath rewrites Git-Bash / MSYS Unix-style drive paths
+// (/c/foo/bar, /d/sd/...) into Windows-native form (C:\foo\bar) so the
+// underlying os.WriteFile call can resolve them. Required because users
+// typically have MSYS_NO_PATHCONV=1 set (so /Game/... asset paths reach the
+// editor verbatim), which also disables MSYS's normal path-arg rewriting —
+// /d/path/foo arrives at digbp.exe as-is and Windows can't find drive '/d'.
+func normalizeOutPath(p string) string {
+	if len(p) >= 3 && p[0] == '/' && p[2] == '/' {
+		drive := p[1]
+		if (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z') {
+			rest := strings.ReplaceAll(p[3:], "/", `\`)
+			return strings.ToUpper(string(drive)) + `:\` + rest
+		}
+	}
+	return p
+}
+
 // callServerToFile behaves like callServer but writes the result JSON to a file
 // instead of stdout. Pretty-prints if --pretty is set.
 func callServerToFile(method string, params interface{}, outPath string) error {
@@ -117,10 +134,11 @@ func callServerToFile(method string, params interface{}, outPath string) error {
 			}
 		}
 	}
-	if err := os.WriteFile(outPath, payload, 0644); err != nil {
+	resolved := normalizeOutPath(outPath)
+	if err := os.WriteFile(resolved, payload, 0644); err != nil {
 		return fmt.Errorf("write output file: %w", err)
 	}
-	fmt.Printf("Wrote %d bytes to %s\n", len(payload), outPath)
+	fmt.Printf("Wrote %d bytes to %s\n", len(payload), resolved)
 	return nil
 }
 
