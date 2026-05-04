@@ -59,6 +59,71 @@ static bool IsBlueprintImplementableEvent(const UFunction* Function)
 #include "UObject/UObjectIterator.h"
 #include "Misc/PackageName.h"
 
+// Implementation of UBlueprintExportReader::WalkWidgetTreeFlat — exposed via
+// the reader header so the bulk widget-tree audit can call it without going
+// through the full export.
+//
+// Storage shape rationale: flat with ParentIndex (no recursive TArray)
+// because UHT rejects recursive USTRUCT TArrays. The commandlet rebuilds the
+// nested tree at JSON-emit time.
+void UBlueprintExportReader::WalkWidgetTreeFlat(UBlueprint* Blueprint, TArray<FBlueprintWidgetTreeNode>& OutNodes)
+{
+	UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(Blueprint);
+	if (!WidgetBP || !WidgetBP->WidgetTree || !WidgetBP->WidgetTree->RootWidget)
+	{
+		return;
+	}
+
+	TFunction<void(UWidget*, const FString&, int32)> Walk;
+	Walk = [&Walk, &OutNodes](UWidget* W, const FString& ParentSlotClass, int32 ParentIdx)
+	{
+		if (!W) { return; }
+
+		FBlueprintWidgetTreeNode Node;
+		Node.Name = W->GetName();
+		Node.Class = W->GetClass()->GetName();
+		Node.ParentSlotClass = ParentSlotClass;
+		Node.ParentIndex = ParentIdx;
+
+		static const TCHAR* CandidateProps[] = {
+			TEXT("Visibility"),
+			TEXT("ToolTipText"),
+			TEXT("Text"),
+			TEXT("Font"),
+			TEXT("ColorAndOpacity"),
+			TEXT("ShadowColorAndOpacity"),
+			TEXT("ShadowOffset"),
+			TEXT("Justification"),
+			TEXT("AutoWrapText"),
+			TEXT("WrapTextAt"),
+			TEXT("Margin"),
+			TEXT("MinDesiredWidth"),
+		};
+		for (const TCHAR* PropName : CandidateProps)
+		{
+			FProperty* Prop = W->GetClass()->FindPropertyByName(FName(PropName));
+			if (!Prop) { continue; }
+			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(W);
+			FString Out;
+			Prop->ExportTextItem(Out, ValuePtr, /*Defaults=*/nullptr, /*Parent=*/W, PPF_None);
+			Node.Properties.Add(PropName, Out);
+		}
+
+		const int32 MyIndex = OutNodes.Add(Node);
+
+		if (UPanelWidget* Panel = Cast<UPanelWidget>(W))
+		{
+			for (UPanelSlot* PSlot : Panel->GetSlots())
+			{
+				if (!PSlot || !PSlot->Content) { continue; }
+				Walk(PSlot->Content, PSlot->GetClass()->GetName(), MyIndex);
+			}
+		}
+	};
+
+	Walk(WidgetBP->WidgetTree->RootWidget, FString(), -1);
+}
+
 // Returns true when the pin type references a sub-object (struct, object, class,
 // enum, etc.) but that object can no longer be resolved — typically because the
 // backing USTRUCT / UClass was deleted from C++.
@@ -650,77 +715,9 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 		}
 	}
 
-	// UMG widget tree (only present on UWidgetBlueprint assets). Walk from
-	// WidgetTree->RootWidget and recurse via UPanelWidget::GetSlots(). Property
-	// dump is class-aware: common fields (Visibility, ToolTipText) on every
-	// widget, Text + Font + color fields on widgets that have them. Values are
-	// emitted as UE-text-format strings via ExportTextItem so the edit-side
-	// `widget set-property` path can round-trip them via ImportText.
-	//
-	// Stored as a flat array with ParentIndex links (UHT rejects recursive
-	// TArray-of-self USTRUCTs). Order is parent-before-child: parent emitted
-	// first, then immediate children, recursively. The commandlet rebuilds
-	// the nested tree at JSON serialization time.
-	if (UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(Blueprint))
-	{
-		UWidgetTree* Tree = WidgetBP->WidgetTree;
-		if (Tree && Tree->RootWidget)
-		{
-			TFunction<void(UWidget*, const FString&, int32)> Walk;
-			Walk = [&Walk, &ExportData](UWidget* W, const FString& ParentSlotClass, int32 ParentIdx)
-			{
-				if (!W) { return; }
-
-				FBlueprintWidgetTreeNode Node;
-				Node.Name = W->GetName();
-				Node.Class = W->GetClass()->GetName();
-				Node.ParentSlotClass = ParentSlotClass;
-				Node.ParentIndex = ParentIdx;
-
-				// Class-aware property dump. FindPropertyByName returns null for
-				// widgets that don't expose the field, so non-applicable props
-				// silently skip per class. Order is deterministic for stable diffs.
-				static const TCHAR* CandidateProps[] = {
-					TEXT("Visibility"),
-					TEXT("ToolTipText"),
-					TEXT("Text"),
-					TEXT("Font"),
-					TEXT("ColorAndOpacity"),
-					TEXT("ShadowColorAndOpacity"),
-					TEXT("ShadowOffset"),
-					TEXT("Justification"),
-					TEXT("AutoWrapText"),
-					TEXT("WrapTextAt"),
-					TEXT("Margin"),
-					TEXT("MinDesiredWidth"),
-				};
-				for (const TCHAR* PropName : CandidateProps)
-				{
-					FProperty* Prop = W->GetClass()->FindPropertyByName(FName(PropName));
-					if (!Prop) { continue; }
-					const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(W);
-					FString Out;
-					Prop->ExportTextItem(Out, ValuePtr, /*Defaults=*/nullptr, /*Parent=*/W, PPF_None);
-					Node.Properties.Add(PropName, Out);
-				}
-
-				const int32 MyIndex = ExportData.WidgetTree.Add(Node);
-
-				// Recurse — children store MyIndex as their ParentIndex so the
-				// commandlet can rebuild the nested tree from this flat list.
-				if (UPanelWidget* Panel = Cast<UPanelWidget>(W))
-				{
-					for (UPanelSlot* PSlot : Panel->GetSlots())
-					{
-						if (!PSlot || !PSlot->Content) { continue; }
-						Walk(PSlot->Content, PSlot->GetClass()->GetName(), MyIndex);
-					}
-				}
-			};
-
-			Walk(Tree->RootWidget, FString(), -1);
-		}
-	}
+	// UMG widget tree (only present on UWidgetBlueprint assets). Walker is
+	// shared with the bulk widget-tree audit; see WalkWidgetTreeFlat method.
+	UBlueprintExportReader::WalkWidgetTreeFlat(Blueprint, ExportData.WidgetTree);
 
 	return ExportData;
 }

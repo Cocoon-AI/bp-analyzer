@@ -934,6 +934,242 @@ void UBlueprintExportCommandlet::BuildCppAudit(const TArray<FString>& SearchPath
 	OutputJson(CppAuditToJson(SearchPaths));
 }
 
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::WidgetTreeAuditToJson(
+	const TArray<FString>& SearchPaths,
+	const TArray<FString>& ClassFilter,
+	const TArray<FString>& PropFilter,
+	const TArray<TPair<FString, FString>>& WhereFilters,
+	bool bFlat)
+{
+	// Normalize class filter: store both "U-prefixed" and stripped names so
+	// callers can pass either ("TextBlock" or "UTextBlock"). Compared against
+	// each widget's class name (which UE returns without the U on widgets).
+	TSet<FString> ClassFilterSet;
+	for (const FString& C : ClassFilter)
+	{
+		if (C.IsEmpty()) { continue; }
+		ClassFilterSet.Add(C);
+		if (C.Len() > 1 && (C[0] == TEXT('U') || C[0] == TEXT('A')))
+		{
+			ClassFilterSet.Add(C.Mid(1));
+		}
+		else
+		{
+			ClassFilterSet.Add(TEXT("U") + C);
+		}
+	}
+
+	// PropFilter empty == emit all curated keys.
+	TSet<FString> PropFilterSet;
+	for (const FString& P : PropFilter)
+	{
+		if (!P.IsEmpty()) { PropFilterSet.Add(P); }
+	}
+
+	// Per-widget match: every where-filter must hit (AND), and class filter
+	// (if non-empty) must accept the widget class.
+	auto MatchesNode = [&](const FBlueprintWidgetTreeNode& W) -> bool
+	{
+		if (ClassFilterSet.Num() > 0 && !ClassFilterSet.Contains(W.Class))
+		{
+			return false;
+		}
+		for (const TPair<FString, FString>& KV : WhereFilters)
+		{
+			const FString* Val = W.Properties.Find(KV.Key);
+			if (!Val) { return false; }
+			if (!Val->Contains(KV.Value)) { return false; }
+		}
+		return true;
+	};
+
+	auto FilteredProps = [&](const FBlueprintWidgetTreeNode& W) -> TSharedPtr<FJsonObject>
+	{
+		TSharedPtr<FJsonObject> Out = MakeShareable(new FJsonObject);
+		for (const TPair<FString, FString>& KV : W.Properties)
+		{
+			if (PropFilterSet.Num() > 0 && !PropFilterSet.Contains(KV.Key)) { continue; }
+			Out->SetStringField(KV.Key, KV.Value);
+		}
+		return Out;
+	};
+
+	FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AR = ARM.Get();
+
+	int32 BpCount = 0;
+	int32 MatchedBpCount = 0;
+	int32 RowCount = 0;
+	TArray<TSharedPtr<FJsonValue>> FlatRows;
+	TArray<TSharedPtr<FJsonValue>> NestedBlueprints;
+
+	for (const FString& SearchPath : SearchPaths)
+	{
+		TArray<FAssetData> Assets;
+		AR.GetAssetsByPath(FName(*SearchPath), Assets, /*bRecursive=*/true);
+
+		for (const FAssetData& Data : Assets)
+		{
+			// Filter to WidgetBlueprint subclasses only (faster than load-and-cast
+			// for every BP under /Game/).
+			if (!Data.AssetClass.ToString().Contains(TEXT("WidgetBlueprint")))
+			{
+				continue;
+			}
+
+			UBlueprint* BP = Cast<UBlueprint>(Data.GetAsset());
+			if (!BP) { continue; }
+			if (BP->GeneratedClass && BP->GeneratedClass->HasAnyClassFlags(CLASS_NewerVersionExists))
+			{
+				continue;
+			}
+
+			++BpCount;
+
+			TArray<FBlueprintWidgetTreeNode> Nodes;
+			UBlueprintExportReader::WalkWidgetTreeFlat(BP, Nodes);
+			if (Nodes.Num() == 0) { continue; }
+
+			const FString BpPath = BP->GetPathName();
+
+			if (bFlat)
+			{
+				// Flat: drop non-matching widgets, emit one row per surviving.
+				int32 BpRows = 0;
+				for (const FBlueprintWidgetTreeNode& N : Nodes)
+				{
+					if (!MatchesNode(N)) { continue; }
+					TSharedPtr<FJsonObject> Row = MakeShareable(new FJsonObject);
+					Row->SetStringField(TEXT("blueprint_path"), BpPath);
+					Row->SetStringField(TEXT("widget_name"), N.Name);
+					Row->SetStringField(TEXT("widget_class"), N.Class);
+					if (!N.ParentSlotClass.IsEmpty())
+					{
+						Row->SetStringField(TEXT("parent_slot_class"), N.ParentSlotClass);
+					}
+					Row->SetObjectField(TEXT("properties"), FilteredProps(N));
+					FlatRows.Add(MakeShareable(new FJsonValueObject(Row)));
+					++BpRows;
+				}
+				if (BpRows > 0)
+				{
+					++MatchedBpCount;
+					RowCount += BpRows;
+				}
+			}
+			else
+			{
+				// Nested: prune subtrees that have no surviving widgets.
+				// Pre-compute child indices per parent for the recursive emit.
+				TArray<TArray<int32>> ChildIndices;
+				ChildIndices.SetNum(Nodes.Num());
+				TArray<int32> Roots;
+				for (int32 i = 0; i < Nodes.Num(); ++i)
+				{
+					const int32 PIdx = Nodes[i].ParentIndex;
+					if (PIdx < 0 || PIdx >= Nodes.Num())
+					{
+						Roots.Add(i);
+					}
+					else
+					{
+						ChildIndices[PIdx].Add(i);
+					}
+				}
+
+				// Two-pass: (1) post-order mark which subtrees keep at least one
+				// matching widget; (2) emit only kept nodes, with kept children.
+				TArray<bool> Keep;
+				Keep.SetNumZeroed(Nodes.Num());
+				TFunction<bool(int32)> ShouldKeep;
+				ShouldKeep = [&ShouldKeep, &Keep, &Nodes, &ChildIndices, &MatchesNode](int32 Idx) -> bool
+				{
+					bool bAnyChildKept = false;
+					for (int32 C : ChildIndices[Idx])
+					{
+						if (ShouldKeep(C)) { bAnyChildKept = true; }
+					}
+					const bool SelfMatches = MatchesNode(Nodes[Idx]);
+					Keep[Idx] = (SelfMatches || bAnyChildKept);
+					return Keep[Idx];
+				};
+				for (int32 R : Roots) { ShouldKeep(R); }
+
+				TFunction<TSharedPtr<FJsonObject>(int32)> EmitNested;
+				EmitNested = [&](int32 Idx) -> TSharedPtr<FJsonObject>
+				{
+					const FBlueprintWidgetTreeNode& W = Nodes[Idx];
+					TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject);
+					Obj->SetStringField(TEXT("name"), W.Name);
+					Obj->SetStringField(TEXT("class"), W.Class);
+					if (!W.ParentSlotClass.IsEmpty())
+					{
+						Obj->SetStringField(TEXT("parent_slot_class"), W.ParentSlotClass);
+					}
+					Obj->SetObjectField(TEXT("properties"), FilteredProps(W));
+
+					TArray<TSharedPtr<FJsonValue>> ChildArr;
+					for (int32 C : ChildIndices[Idx])
+					{
+						if (Keep[C])
+						{
+							ChildArr.Add(MakeShareable(new FJsonValueObject(EmitNested(C))));
+						}
+					}
+					Obj->SetArrayField(TEXT("children"), ChildArr);
+					return Obj;
+				};
+
+				TArray<TSharedPtr<FJsonValue>> RootArr;
+				int32 KeptCount = 0;
+				for (int32 R : Roots)
+				{
+					if (Keep[R])
+					{
+						RootArr.Add(MakeShareable(new FJsonValueObject(EmitNested(R))));
+						++KeptCount;
+					}
+				}
+				if (KeptCount > 0)
+				{
+					TSharedPtr<FJsonObject> BpObj = MakeShareable(new FJsonObject);
+					BpObj->SetStringField(TEXT("blueprint_path"), BpPath);
+					BpObj->SetArrayField(TEXT("widget_tree"), RootArr);
+					NestedBlueprints.Add(MakeShareable(new FJsonValueObject(BpObj)));
+					++MatchedBpCount;
+					// Count rows kept for the response summary, even in nested mode.
+					for (int32 i = 0; i < Nodes.Num(); ++i)
+					{
+						if (Keep[i]) { ++RowCount; }
+					}
+				}
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+	Result->SetBoolField(TEXT("success"), true);
+
+	TArray<TSharedPtr<FJsonValue>> SearchPathsJson;
+	for (const FString& P : SearchPaths) { SearchPathsJson.Add(MakeShareable(new FJsonValueString(P))); }
+	Result->SetArrayField(TEXT("search_paths"), SearchPathsJson);
+
+	Result->SetBoolField(TEXT("flat"), bFlat);
+	Result->SetNumberField(TEXT("bp_count"), BpCount);
+	Result->SetNumberField(TEXT("matched_bp_count"), MatchedBpCount);
+	Result->SetNumberField(TEXT("row_count"), RowCount);
+
+	if (bFlat)
+	{
+		Result->SetArrayField(TEXT("rows"), FlatRows);
+	}
+	else
+	{
+		Result->SetArrayField(TEXT("blueprints"), NestedBlueprints);
+	}
+	return Result;
+}
+
 TSharedPtr<FJsonObject> UBlueprintExportCommandlet::CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category, bool bRawNames)
 {
 	UBlueprintExportReader* Reader = NewObject<UBlueprintExportReader>();

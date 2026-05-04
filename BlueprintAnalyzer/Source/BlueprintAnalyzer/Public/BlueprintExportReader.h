@@ -147,6 +147,20 @@ public:
 	TArray<FBlueprintReferenceData> GetAssetReferencers(const FString& AssetPath, bool bIncludeSoftReferences = true);
 
 	/**
+	 * Walk a Blueprint's UMG WidgetTree (no-op for non-UWidgetBlueprint assets),
+	 * populating OutNodes flat with parent-before-child order and ParentIndex
+	 * links. Property dump is class-aware: emits the curated style set
+	 * (Visibility, ToolTipText, Text, Font, ColorAndOpacity, etc.) for any
+	 * field the widget class exposes; non-applicable fields are silently
+	 * skipped. Values are UE-text-format via ExportTextItem so they round-trip
+	 * through the edit-side ImportText path.
+	 *
+	 * Shared between ExportBlueprint and the bulk widget-tree audit so the
+	 * single-BP and many-BP paths emit identical per-widget data.
+	 */
+	static void WalkWidgetTreeFlat(class UBlueprint* Blueprint, TArray<FBlueprintWidgetTreeNode>& OutNodes);
+
+	/**
 	 * Build a reverse index of every native C++ symbol referenced by any Blueprint
 	 * under SearchPaths. Walks parent class, K2Node_CallFunction, K2Node_VariableGet/Set,
 	 * K2Node_BaseMCDelegate subclasses (Add/Remove/Create/Assign/Call),

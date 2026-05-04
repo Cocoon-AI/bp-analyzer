@@ -108,6 +108,25 @@ public:
 	// Build full C++ reference audit across a search path (reverse-index of native symbols -> BP callers)
 	TSharedPtr<FJsonObject> CppAuditToJson(const TArray<FString>& SearchPaths);
 
+	// Bulk widget-tree audit across a search path. Loads every UWidgetBlueprint
+	// under SearchPaths, walks its WidgetTree, applies the filters, and emits
+	// either nested-per-BP (default) or flat one-row-per-widget (bFlat) JSON.
+	//
+	// ClassFilter: empty = no filter; otherwise widget classes (with or without
+	//   the leading 'U') are matched against this set; non-matching widgets are
+	//   dropped (in nested mode, ancestors are kept if they have surviving
+	//   matched descendants — pruned otherwise).
+	// PropFilter: empty = emit all keys from the curated whitelist; otherwise
+	//   only emit listed keys in each widget's properties dict.
+	// WhereFilters: array of (PropName, Substring); a widget passes only if
+	//   for every entry, its properties[PropName] contains Substring (AND).
+	TSharedPtr<FJsonObject> WidgetTreeAuditToJson(
+		const TArray<FString>& SearchPaths,
+		const TArray<FString>& ClassFilter,
+		const TArray<FString>& PropFilter,
+		const TArray<TPair<FString, FString>>& WhereFilters,
+		bool bFlat);
+
 	// Generate C++ UPROPERTY declarations from a BP's variables + dispatchers.
 	// VarsFilter is an optional whitelist matched against RAW BP names (empty = all).
 	// Category overrides the emitted Category specifier (empty = derive from BP).

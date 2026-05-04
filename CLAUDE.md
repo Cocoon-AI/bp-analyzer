@@ -158,6 +158,12 @@ digbp cpp-audit --dir=/Game/Showdown/ --pretty
 digbp cppgen upropertys --path=/Game/BP
 digbp cppgen upropertys --path=/Game/BP --vars="CurrentXP,OnReady" --category="AccountInfo"
 
+# Bulk UMG widget-tree audit (across many WidgetBlueprints)
+digbp widget-tree --dir=/Game/                                   # nested, all widgets, all properties
+digbp widget-tree --dir=/Game/ --flat --class=TextBlock          # one row per TextBlock across all BPs
+digbp widget-tree --dir=/Game/ --flat --class=TextBlock,EditableTextBox --properties=Font \
+    --where='Font~/Engine/EngineFonts' --out=fonts.json          # engine-fallback-font hunt
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```

@@ -62,6 +62,7 @@ func main() {
 		findpropCmd(),
 		searchCmd(),
 		cppAuditCmd(),
+		widgetTreeCmd(),
 		cppGenCmd(),
 		editCmd(),
 		versionCmd(),
@@ -592,6 +593,100 @@ Stdout only, no files written.`,
 	cmd.Flags().StringVar(&category, "category", "", `Override the Category specifier on all emitted UPROPERTYs`)
 	cmd.Flags().BoolVar(&rawNames, "raw-names", false, "Preserve raw BP names in emitted C++ (default: transform to C++-friendly identifiers)")
 	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func widgetTreeCmd() *cobra.Command {
+	var (
+		dir            string
+		flat           bool
+		classCSV       string
+		propsCSV       string
+		whereFlags     []string
+		out            string
+	)
+	cmd := &cobra.Command{
+		Use:   "widget-tree",
+		Short: "Bulk audit of UMG widget trees across many WidgetBlueprints",
+		Long: `Walks every UWidgetBlueprint under --dir and emits the WidgetTree of each.
+Mirrors the per-BP widget_tree shape from 'digbp export', extended with
+server-side filters and a one-row-per-widget mode for easy jq pipelines.
+
+By default emits nested JSON (one entry per matched BP, each with a tree of
+widgets). Use --flat to emit one row per widget across all matched BPs:
+  { blueprint_path, widget_name, widget_class, parent_slot_class, properties }
+
+Server-side filters (composable, all optional, all reduce wire size):
+  --class=A,B,...   Drop widgets whose class isn't in the list (matches with
+                    or without the leading 'U'). E.g. --class=TextBlock,Button
+  --properties=X,Y  Only emit listed property keys in each widget's
+                    properties dict. E.g. --properties=Font,ColorAndOpacity
+  --where=Prop~Sub  Drop widgets where properties[Prop] doesn't contain Sub.
+                    Repeatable for AND. Substring match (not regex).
+
+Concrete validation pattern — engine-fallback-font hunt:
+  digbp widget-tree --dir=/Game/ --flat \\
+      --class=TextBlock,ComboBoxString,EditableTextBox \\
+      --properties=Font \\
+      --where='Font~/Engine/EngineFonts'
+
+Use --out=file.json for large unfiltered dumps; matches 'digbp cpp-audit --out'.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]interface{}{
+				"dir":  dir,
+				"flat": flat,
+			}
+			splitTrim := func(s string) []string {
+				if s == "" {
+					return nil
+				}
+				parts := strings.Split(s, ",")
+				out := make([]string, 0, len(parts))
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						out = append(out, p)
+					}
+				}
+				return out
+			}
+			if cs := splitTrim(classCSV); len(cs) > 0 {
+				params["class"] = cs
+			}
+			if ps := splitTrim(propsCSV); len(ps) > 0 {
+				params["properties"] = ps
+			}
+			if len(whereFlags) > 0 {
+				wh := make([]map[string]string, 0, len(whereFlags))
+				for _, w := range whereFlags {
+					// Split on first '~' so values containing '~' (regex chars,
+					// path fragments) round-trip cleanly.
+					idx := strings.Index(w, "~")
+					if idx <= 0 {
+						return fmt.Errorf("invalid --where %q: expected Prop~Pattern (e.g. --where='Font~/Engine/EngineFonts')", w)
+					}
+					prop := strings.TrimSpace(w[:idx])
+					val := w[idx+1:]
+					if prop == "" {
+						return fmt.Errorf("invalid --where %q: empty property name", w)
+					}
+					wh = append(wh, map[string]string{"prop": prop, "value": val})
+				}
+				params["where"] = wh
+			}
+			if out != "" {
+				return callServerToFile("widget_tree", params, out)
+			}
+			return callServer("widget_tree", params)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "dir", "", "Directory to scan (required, e.g. /Game/)")
+	cmd.Flags().BoolVar(&flat, "flat", false, "Emit one row per widget across all BPs (default: nested per-BP)")
+	cmd.Flags().StringVar(&classCSV, "class", "", "Comma-separated widget-class allowlist (e.g. TextBlock,ComboBoxString)")
+	cmd.Flags().StringVar(&propsCSV, "properties", "", "Comma-separated property-key allowlist for the properties dict")
+	cmd.Flags().StringArrayVar(&whereFlags, "where", nil, "Filter Prop~Substring; repeatable for AND (e.g. --where=Font~/Engine/EngineFonts)")
+	cmd.Flags().StringVar(&out, "out", "", "Write output to file instead of stdout")
+	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }
 

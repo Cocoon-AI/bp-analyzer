@@ -594,6 +594,53 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Result);
 	}
 
+	if (Method == TEXT("widget_tree"))
+	{
+		FString Dir;
+		if (!Params->TryGetStringField(TEXT("dir"), Dir) || Dir.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dir"));
+		}
+
+		bool bFlat = false;
+		Params->TryGetBoolField(TEXT("flat"), bFlat);
+
+		auto ReadStringArray = [&](const FString& Field) -> TArray<FString>
+		{
+			TArray<FString> Out;
+			const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+			if (Params->TryGetArrayField(Field, Array) && Array)
+			{
+				for (const TSharedPtr<FJsonValue>& V : *Array) { Out.Add(V->AsString()); }
+			}
+			return Out;
+		};
+		const TArray<FString> ClassFilter = ReadStringArray(TEXT("class"));
+		const TArray<FString> PropFilter = ReadStringArray(TEXT("properties"));
+
+		// where: array of {prop, value} objects (AND across entries).
+		TArray<TPair<FString, FString>> WhereFilters;
+		const TArray<TSharedPtr<FJsonValue>>* WhereArr = nullptr;
+		if (Params->TryGetArrayField(TEXT("where"), WhereArr) && WhereArr)
+		{
+			for (const TSharedPtr<FJsonValue>& V : *WhereArr)
+			{
+				const TSharedPtr<FJsonObject>* Obj = nullptr;
+				if (!V->TryGetObject(Obj) || !Obj || !Obj->IsValid()) { continue; }
+				FString Prop, Val;
+				(*Obj)->TryGetStringField(TEXT("prop"), Prop);
+				(*Obj)->TryGetStringField(TEXT("value"), Val);
+				if (!Prop.IsEmpty()) { WhereFilters.Emplace(Prop, Val); }
+			}
+		}
+
+		TArray<FString> SearchPaths;
+		SearchPaths.Add(Dir);
+
+		TSharedPtr<FJsonObject> Result = Commandlet->WidgetTreeAuditToJson(SearchPaths, ClassFilter, PropFilter, WhereFilters, bFlat);
+		return MakeResponse(Id, Result);
+	}
+
 	if (Method == TEXT("search"))
 	{
 		FString Dir;

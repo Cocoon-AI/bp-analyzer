@@ -308,6 +308,45 @@ digbp edit event remove    --path=/Game/BP_Foo --name=OnDeath
 digbp edit event implement --path=/Game/BP_Foo --event=ReceiveBeginPlay
 ```
 
+### Bulk UMG Audit (`digbp widget-tree`)
+
+For audits that span many WidgetBlueprints (font usage, color consistency,
+hidden-widget hunts, hardcoded-text scans), `digbp widget-tree --dir=/Game/`
+walks every UWidgetBlueprint under the dir and emits the WidgetTrees.
+Server-side filters keep the wire size manageable:
+
+```bash
+# All widgets, nested per-BP (default — large for /Game/)
+digbp widget-tree --dir=/Game/UI/
+
+# Flat mode: one row per widget across all BPs
+digbp widget-tree --dir=/Game/ --flat
+
+# Class allowlist (matches with or without 'U' prefix)
+digbp widget-tree --dir=/Game/ --flat --class=TextBlock,ComboBoxString,EditableTextBox
+
+# Property-key allowlist — only emit Font + ColorAndOpacity in each row
+digbp widget-tree --dir=/Game/ --flat --class=TextBlock --properties=Font,ColorAndOpacity
+
+# --where=Prop~Substring filters by property value (substring match, not regex).
+# Repeatable for AND. Drops widgets where the named property value doesn't
+# contain the substring.
+digbp widget-tree --dir=/Game/ --flat \
+    --class=TextBlock,ComboBoxString,EditableTextBox \
+    --properties=Font \
+    --where='Font~/Engine/EngineFonts'
+# → only widgets using engine-fallback fonts
+
+# Use --out for large dumps (matches digbp cpp-audit --out shape)
+digbp widget-tree --dir=/Game/ --out=widgets.json
+```
+
+Response shape (flat): `{success, search_paths, flat: true, bp_count,
+matched_bp_count, row_count, rows: [{blueprint_path, widget_name,
+widget_class, parent_slot_class, properties}]}`. Nested mode swaps `rows`
+for `blueprints: [{blueprint_path, widget_tree: [...nested children...]}]`
+and prunes subtrees with no surviving widgets.
+
 ### UMG Widgets (WidgetBlueprint WidgetTree)
 
 For UWidgetBlueprint assets, `digbp export --path=...` includes a `widget_tree`

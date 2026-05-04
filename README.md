@@ -103,6 +103,7 @@ digbp stop        # Shutdown server
 | `digbp search` | Text search across Blueprints | `--dir`, `--query` |
 | `digbp cpp-audit` | Reverse-index of every native C++ symbol referenced by any BP under `--dir` | `--dir` |
 | `digbp cppgen upropertys` | Emit C++ UPROPERTY declarations from BP variables + dispatchers | `--path` |
+| `digbp widget-tree` | Bulk UMG widget-tree audit across many WidgetBlueprints with class / property / where filters | `--dir` |
 | `digbp edit` | Mutate Blueprints (see below) | varies |
 
 ### Edit Commands
