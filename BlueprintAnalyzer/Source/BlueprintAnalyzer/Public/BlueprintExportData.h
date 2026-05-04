@@ -318,16 +318,18 @@ struct BLUEPRINTANALYZER_API FBlueprintComponentData
 };
 
 /**
- * UMG widget tree node — recursive. Populated only for UWidgetBlueprint assets.
+ * UMG widget tree node — flat representation (one entry per widget, parent
+ * link via index). Populated only for UWidgetBlueprint assets.
+ *
+ * UE4 UHT rejects USTRUCTs that hold a UPROPERTY TArray-of-self ("struct
+ * recursion via arrays is unsupported for properties"). Flat list with
+ * ParentIndex sidesteps that — the commandlet rebuilds the nested tree at
+ * JSON serialization time so the on-the-wire shape stays nested.
  *
  * Properties is a flat map of UE-text-format values keyed by simple property
  * name (no dotted struct paths). Read-side keeps it flat for human inspection;
  * the edit-side `widget set-property` op accepts dotted paths (Font.Size) and
  * walks struct properties to apply ImportText at the leaf.
- *
- * Children is the recursive panel-content tree: panel widgets (UPanelWidget
- * subclasses like UVerticalBox, UCanvasPanel) hold child widgets via UPanelSlot;
- * leaf widgets (UTextBlock, UButton when no nested content) have empty Children.
  */
 USTRUCT(BlueprintType)
 struct BLUEPRINTANALYZER_API FBlueprintWidgetTreeNode
@@ -348,9 +350,9 @@ struct BLUEPRINTANALYZER_API FBlueprintWidgetTreeNode
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	TMap<FString, FString> Properties;
 
-	/** Recursive children for panel widgets. Empty for leaves. */
+	/** Index of the parent node in FBlueprintExportData::WidgetTree. INDEX_NONE (-1) for roots. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
-	TArray<FBlueprintWidgetTreeNode> Children;
+	int32 ParentIndex = -1;
 };
 
 /**

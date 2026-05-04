@@ -656,25 +656,30 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 	// widget, Text + Font + color fields on widgets that have them. Values are
 	// emitted as UE-text-format strings via ExportTextItem so the edit-side
 	// `widget set-property` path can round-trip them via ImportText.
+	//
+	// Stored as a flat array with ParentIndex links (UHT rejects recursive
+	// TArray-of-self USTRUCTs). Order is parent-before-child: parent emitted
+	// first, then immediate children, recursively. The commandlet rebuilds
+	// the nested tree at JSON serialization time.
 	if (UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(Blueprint))
 	{
 		UWidgetTree* Tree = WidgetBP->WidgetTree;
 		if (Tree && Tree->RootWidget)
 		{
-			TFunction<FBlueprintWidgetTreeNode(UWidget*, const FString&)> Walk;
-			Walk = [&Walk](UWidget* W, const FString& ParentSlotClass) -> FBlueprintWidgetTreeNode
+			TFunction<void(UWidget*, const FString&, int32)> Walk;
+			Walk = [&Walk, &ExportData](UWidget* W, const FString& ParentSlotClass, int32 ParentIdx)
 			{
-				FBlueprintWidgetTreeNode Node;
-				if (!W) { return Node; }
+				if (!W) { return; }
 
+				FBlueprintWidgetTreeNode Node;
 				Node.Name = W->GetName();
 				Node.Class = W->GetClass()->GetName();
 				Node.ParentSlotClass = ParentSlotClass;
+				Node.ParentIndex = ParentIdx;
 
-				// Property dump. Try each candidate by name; FindPropertyByName
-				// returns null when the class doesn't have it, so we naturally
-				// only emit applicable fields. Order is deterministic so diffs
-				// across exports are stable.
+				// Class-aware property dump. FindPropertyByName returns null for
+				// widgets that don't expose the field, so non-applicable props
+				// silently skip per class. Order is deterministic for stable diffs.
 				static const TCHAR* CandidateProps[] = {
 					TEXT("Visibility"),
 					TEXT("ToolTipText"),
@@ -699,23 +704,21 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 					Node.Properties.Add(PropName, Out);
 				}
 
-				// Recurse on panels. UPanelWidget exposes GetSlots() returning
-				// UPanelSlot*; each slot's Content is the child widget. Non-
-				// panel widgets stop here (Children stays empty).
+				const int32 MyIndex = ExportData.WidgetTree.Add(Node);
+
+				// Recurse — children store MyIndex as their ParentIndex so the
+				// commandlet can rebuild the nested tree from this flat list.
 				if (UPanelWidget* Panel = Cast<UPanelWidget>(W))
 				{
 					for (UPanelSlot* PSlot : Panel->GetSlots())
 					{
 						if (!PSlot || !PSlot->Content) { continue; }
-						const FString SlotClassName = PSlot->GetClass()->GetName();
-						Node.Children.Add(Walk(PSlot->Content, SlotClassName));
+						Walk(PSlot->Content, PSlot->GetClass()->GetName(), MyIndex);
 					}
 				}
-
-				return Node;
 			};
 
-			ExportData.WidgetTree.Add(Walk(Tree->RootWidget, FString()));
+			Walk(Tree->RootWidget, FString(), -1);
 		}
 	}
 

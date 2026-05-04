@@ -1548,13 +1548,34 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 		}
 		Json->SetArrayField(TEXT("components"), Components);
 
-		// Widget tree (UWidgetBlueprint only). Recursive — emit only if the
-		// reader populated anything. Empty for non-WidgetBlueprint exports.
+		// Widget tree (UWidgetBlueprint only). Storage is flat with ParentIndex
+		// links because UHT rejects recursive USTRUCT TArrays. Rebuild the
+		// nested shape here so the on-the-wire JSON stays tree-shaped — that's
+		// what gamedev's audit pipeline expects.
 		if (Data.WidgetTree.Num() > 0)
 		{
-			TFunction<TSharedPtr<FJsonObject>(const FBlueprintWidgetTreeNode&)> WidgetToJson;
-			WidgetToJson = [&WidgetToJson](const FBlueprintWidgetTreeNode& W) -> TSharedPtr<FJsonObject>
+			// Pre-compute ChildIndices[i] = list of indices whose ParentIndex==i.
+			// Single pass, then recursive emit.
+			TArray<TArray<int32>> ChildIndices;
+			ChildIndices.SetNum(Data.WidgetTree.Num());
+			TArray<int32> RootIndices;
+			for (int32 i = 0; i < Data.WidgetTree.Num(); ++i)
 			{
+				const int32 PIdx = Data.WidgetTree[i].ParentIndex;
+				if (PIdx < 0 || PIdx >= Data.WidgetTree.Num())
+				{
+					RootIndices.Add(i);
+				}
+				else
+				{
+					ChildIndices[PIdx].Add(i);
+				}
+			}
+
+			TFunction<TSharedPtr<FJsonObject>(int32)> EmitIndex;
+			EmitIndex = [&EmitIndex, &Data, &ChildIndices](int32 Idx) -> TSharedPtr<FJsonObject>
+			{
+				const FBlueprintWidgetTreeNode& W = Data.WidgetTree[Idx];
 				TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject);
 				Obj->SetStringField(TEXT("name"), W.Name);
 				Obj->SetStringField(TEXT("class"), W.Class);
@@ -1571,18 +1592,18 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 				Obj->SetObjectField(TEXT("properties"), Props);
 
 				TArray<TSharedPtr<FJsonValue>> ChildArr;
-				for (const FBlueprintWidgetTreeNode& C : W.Children)
+				for (int32 CIdx : ChildIndices[Idx])
 				{
-					ChildArr.Add(MakeShareable(new FJsonValueObject(WidgetToJson(C))));
+					ChildArr.Add(MakeShareable(new FJsonValueObject(EmitIndex(CIdx))));
 				}
 				Obj->SetArrayField(TEXT("children"), ChildArr);
 				return Obj;
 			};
 
 			TArray<TSharedPtr<FJsonValue>> WidgetArr;
-			for (const FBlueprintWidgetTreeNode& Root : Data.WidgetTree)
+			for (int32 RIdx : RootIndices)
 			{
-				WidgetArr.Add(MakeShareable(new FJsonValueObject(WidgetToJson(Root))));
+				WidgetArr.Add(MakeShareable(new FJsonValueObject(EmitIndex(RIdx))));
 			}
 			Json->SetArrayField(TEXT("widget_tree"), WidgetArr);
 		}
@@ -1594,9 +1615,9 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 		Json->SetNumberField(TEXT("macro_count"), Data.Macros.Num());
 		Json->SetNumberField(TEXT("event_count"), Data.EventGraph.Num());
 		Json->SetNumberField(TEXT("component_count"), Data.Components.Num());
-		// Top-level widget count (root widgets only — usually 1 for WidgetBP).
-		// Tells callers whether the BP is a UWidgetBlueprint without a full dump.
-		Json->SetNumberField(TEXT("widget_root_count"), Data.WidgetTree.Num());
+		// Total widget count (flat — every widget in the tree). Tells callers
+		// whether the BP is a UWidgetBlueprint without a full dump.
+		Json->SetNumberField(TEXT("widget_count"), Data.WidgetTree.Num());
 	}
 
 	return Json;
