@@ -81,6 +81,9 @@ public:
 	static TSharedPtr<FJsonObject> ComponentReparent(const TSharedPtr<FJsonObject>& Params);
 	static TSharedPtr<FJsonObject> ComponentSetProperty(const TSharedPtr<FJsonObject>& Params);
 
+	// BlueprintEditOps_Widgets.cpp (UMG WidgetTree edits — distinct from SCS components)
+	static TSharedPtr<FJsonObject> WidgetSetProperty(const TSharedPtr<FJsonObject>& Params);
+
 	// --- Phase D: node graph editing ---
 
 	// BlueprintEditOps_Nodes.cpp (generic node/pin ops)

@@ -1547,6 +1547,45 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 			Components.Add(MakeShareable(new FJsonValueObject(CompObj)));
 		}
 		Json->SetArrayField(TEXT("components"), Components);
+
+		// Widget tree (UWidgetBlueprint only). Recursive — emit only if the
+		// reader populated anything. Empty for non-WidgetBlueprint exports.
+		if (Data.WidgetTree.Num() > 0)
+		{
+			TFunction<TSharedPtr<FJsonObject>(const FBlueprintWidgetTreeNode&)> WidgetToJson;
+			WidgetToJson = [&WidgetToJson](const FBlueprintWidgetTreeNode& W) -> TSharedPtr<FJsonObject>
+			{
+				TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject);
+				Obj->SetStringField(TEXT("name"), W.Name);
+				Obj->SetStringField(TEXT("class"), W.Class);
+				if (!W.ParentSlotClass.IsEmpty())
+				{
+					Obj->SetStringField(TEXT("parent_slot_class"), W.ParentSlotClass);
+				}
+
+				TSharedPtr<FJsonObject> Props = MakeShareable(new FJsonObject);
+				for (const TPair<FString, FString>& KV : W.Properties)
+				{
+					Props->SetStringField(KV.Key, KV.Value);
+				}
+				Obj->SetObjectField(TEXT("properties"), Props);
+
+				TArray<TSharedPtr<FJsonValue>> ChildArr;
+				for (const FBlueprintWidgetTreeNode& C : W.Children)
+				{
+					ChildArr.Add(MakeShareable(new FJsonValueObject(WidgetToJson(C))));
+				}
+				Obj->SetArrayField(TEXT("children"), ChildArr);
+				return Obj;
+			};
+
+			TArray<TSharedPtr<FJsonValue>> WidgetArr;
+			for (const FBlueprintWidgetTreeNode& Root : Data.WidgetTree)
+			{
+				WidgetArr.Add(MakeShareable(new FJsonValueObject(WidgetToJson(Root))));
+			}
+			Json->SetArrayField(TEXT("widget_tree"), WidgetArr);
+		}
 	}
 	else
 	{
@@ -1555,6 +1594,9 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::BlueprintDataToJson(const FB
 		Json->SetNumberField(TEXT("macro_count"), Data.Macros.Num());
 		Json->SetNumberField(TEXT("event_count"), Data.EventGraph.Num());
 		Json->SetNumberField(TEXT("component_count"), Data.Components.Num());
+		// Top-level widget count (root widgets only — usually 1 for WidgetBP).
+		// Tells callers whether the BP is a UWidgetBlueprint without a full dump.
+		Json->SetNumberField(TEXT("widget_root_count"), Data.WidgetTree.Num());
 	}
 
 	return Json;

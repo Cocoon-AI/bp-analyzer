@@ -25,7 +25,11 @@ public class BlueprintAnalyzer : ModuleRules
 				"UnrealEd",
 				"BlueprintGraph",
 				"Kismet",
-				"AssetRegistry"
+				"AssetRegistry",
+				// UMG + UMGEditor for WidgetTree introspection (UWidget, UPanelWidget,
+				// UPanelSlot, UWidgetBlueprint).
+				"UMG",
+				"UMGEditor"
 			});
 		}
 	}

@@ -34,6 +34,7 @@ Changes stage in memory until explicitly committed with 'edit compile' and
 		editEventCmd(),
 		editDispatcherCmd(),
 		editComponentCmd(),
+		editWidgetCmd(),
 		// Phase D (node graph editing)
 		editNodeCmd(),
 		editPinCmd(),

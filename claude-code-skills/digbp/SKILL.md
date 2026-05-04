@@ -308,6 +308,39 @@ digbp edit event remove    --path=/Game/BP_Foo --name=OnDeath
 digbp edit event implement --path=/Game/BP_Foo --event=ReceiveBeginPlay
 ```
 
+### UMG Widgets (WidgetBlueprint WidgetTree)
+
+For UWidgetBlueprint assets, `digbp export --path=...` includes a `widget_tree`
+field with the recursive widget hierarchy (Name, Class, ParentSlotClass,
+Children) plus selected style properties (Visibility, ToolTipText, Text, Font,
+ColorAndOpacity, ShadowColorAndOpacity, ShadowOffset, etc.) emitted as UE-text
+strings via ExportTextItem.
+
+Edit side mirrors `edit component set-property` but targets UMG widgets
+addressed by name, with dotted property paths through struct fields:
+
+```bash
+# Set the displayed text on a TextBlock
+digbp edit widget set-property --path=/Game/UI/SP_Matchmaker --widget=StatusText \
+    --property=Text --value="Connecting..."
+
+# Set font size (dotted path into the Font FSlateFontInfo struct)
+digbp edit widget set-property --path=/Game/UI/SP_Matchmaker --widget=StatusText \
+    --property=Font.Size --value=24
+
+# Swap the font asset (object<Font> path)
+digbp edit widget set-property --path=/Game/UI/SP_Matchmaker --widget=StatusText \
+    --property=Font.FontObject --value=/Game/UI/Fonts/Title.Title
+
+# Color (FLinearColor or FSlateColor in UE text)
+digbp edit widget set-property --path=/Game/UI/SP_Matchmaker --widget=StatusText \
+    --property=ColorAndOpacity --value="(R=1.0,G=0.8,B=0.4,A=1.0)"
+```
+
+Workflow: p4 edit the .uasset, mutate, then `edit save-and-compile`. The
+WidgetTree mutation is on the design-time archetype, so it persists across
+PIE / packaged runs once saved.
+
 ### Components (Simple Construction Script)
 
 ```bash

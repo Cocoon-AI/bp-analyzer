@@ -318,6 +318,42 @@ struct BLUEPRINTANALYZER_API FBlueprintComponentData
 };
 
 /**
+ * UMG widget tree node — recursive. Populated only for UWidgetBlueprint assets.
+ *
+ * Properties is a flat map of UE-text-format values keyed by simple property
+ * name (no dotted struct paths). Read-side keeps it flat for human inspection;
+ * the edit-side `widget set-property` op accepts dotted paths (Font.Size) and
+ * walks struct properties to apply ImportText at the leaf.
+ *
+ * Children is the recursive panel-content tree: panel widgets (UPanelWidget
+ * subclasses like UVerticalBox, UCanvasPanel) hold child widgets via UPanelSlot;
+ * leaf widgets (UTextBlock, UButton when no nested content) have empty Children.
+ */
+USTRUCT(BlueprintType)
+struct BLUEPRINTANALYZER_API FBlueprintWidgetTreeNode
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Name;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString Class;
+
+	/** Class of the UPanelSlot owning this widget (e.g. VerticalBoxSlot, CanvasPanelSlot). Empty for the root widget. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	FString ParentSlotClass;
+
+	/** Selected style/identification properties as UE-text-format strings (matches ExportTextItem output). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TMap<FString, FString> Properties;
+
+	/** Recursive children for panel widgets. Empty for leaves. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FBlueprintWidgetTreeNode> Children;
+};
+
+/**
  * Main export data structure containing all Blueprint information
  */
 USTRUCT(BlueprintType)
@@ -363,6 +399,14 @@ struct BLUEPRINTANALYZER_API FBlueprintExportData
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	TArray<FBlueprintComponentData> Components;
+
+	/**
+	 * UMG widget tree, populated only when the BP is a UWidgetBlueprint. Empty
+	 * for non-widget Blueprints. Usually contains a single root widget; nested
+	 * panels carry their children recursively via FBlueprintWidgetTreeNode::Children.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
+	TArray<FBlueprintWidgetTreeNode> WidgetTree;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BlueprintExport")
 	FString BlueprintDescription;

@@ -18,6 +18,13 @@ static bool IsBlueprintImplementableEvent(const UFunction* Function)
 	return Function && Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) && !Function->HasAnyFunctionFlags(FUNC_Native);
 }
 #include "Engine/BlueprintGeneratedClass.h"
+// UMG: WidgetTree introspection. Headers in UMG (UWidget, UPanelWidget, UPanelSlot,
+// UWidgetTree) + UMGEditor (UWidgetBlueprint). Both modules added to Build.cs.
+#include "WidgetBlueprint.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Widget.h"
+#include "Components/PanelWidget.h"
+#include "Components/PanelSlot.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "EdGraph/EdGraph.h"
@@ -640,6 +647,75 @@ FBlueprintExportData UBlueprintExportReader::ExportBlueprintObject(UBlueprint* B
 			}
 
 			ExportData.Components.Add(CompData);
+		}
+	}
+
+	// UMG widget tree (only present on UWidgetBlueprint assets). Walk from
+	// WidgetTree->RootWidget and recurse via UPanelWidget::GetSlots(). Property
+	// dump is class-aware: common fields (Visibility, ToolTipText) on every
+	// widget, Text + Font + color fields on widgets that have them. Values are
+	// emitted as UE-text-format strings via ExportTextItem so the edit-side
+	// `widget set-property` path can round-trip them via ImportText.
+	if (UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(Blueprint))
+	{
+		UWidgetTree* Tree = WidgetBP->WidgetTree;
+		if (Tree && Tree->RootWidget)
+		{
+			TFunction<FBlueprintWidgetTreeNode(UWidget*, const FString&)> Walk;
+			Walk = [&Walk](UWidget* W, const FString& ParentSlotClass) -> FBlueprintWidgetTreeNode
+			{
+				FBlueprintWidgetTreeNode Node;
+				if (!W) { return Node; }
+
+				Node.Name = W->GetName();
+				Node.Class = W->GetClass()->GetName();
+				Node.ParentSlotClass = ParentSlotClass;
+
+				// Property dump. Try each candidate by name; FindPropertyByName
+				// returns null when the class doesn't have it, so we naturally
+				// only emit applicable fields. Order is deterministic so diffs
+				// across exports are stable.
+				static const TCHAR* CandidateProps[] = {
+					TEXT("Visibility"),
+					TEXT("ToolTipText"),
+					TEXT("Text"),
+					TEXT("Font"),
+					TEXT("ColorAndOpacity"),
+					TEXT("ShadowColorAndOpacity"),
+					TEXT("ShadowOffset"),
+					TEXT("Justification"),
+					TEXT("AutoWrapText"),
+					TEXT("WrapTextAt"),
+					TEXT("Margin"),
+					TEXT("MinDesiredWidth"),
+				};
+				for (const TCHAR* PropName : CandidateProps)
+				{
+					FProperty* Prop = W->GetClass()->FindPropertyByName(FName(PropName));
+					if (!Prop) { continue; }
+					const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(W);
+					FString Out;
+					Prop->ExportTextItem(Out, ValuePtr, /*Defaults=*/nullptr, /*Parent=*/W, PPF_None);
+					Node.Properties.Add(PropName, Out);
+				}
+
+				// Recurse on panels. UPanelWidget exposes GetSlots() returning
+				// UPanelSlot*; each slot's Content is the child widget. Non-
+				// panel widgets stop here (Children stays empty).
+				if (UPanelWidget* Panel = Cast<UPanelWidget>(W))
+				{
+					for (UPanelSlot* PSlot : Panel->GetSlots())
+					{
+						if (!PSlot || !PSlot->Content) { continue; }
+						const FString SlotClassName = PSlot->GetClass()->GetName();
+						Node.Children.Add(Walk(PSlot->Content, SlotClassName));
+					}
+				}
+
+				return Node;
+			};
+
+			ExportData.WidgetTree.Add(Walk(Tree->RootWidget, FString()));
 		}
 	}
 

@@ -9,7 +9,7 @@ UE4.27 Editor plugin providing a CLI commandlet for Blueprint analysis and editi
 - **C++ reference audit** - reverse-index of every native symbol (UClass/UFUNCTION/UPROPERTY/USTRUCT/BlueprintAssignable/event override) referenced by any Blueprint in a directory; use before deleting C++ to find BPs that will break
 - **Text search** - find-in-blueprints style search across node titles, comments, pin names/defaults, variable names
 - **Search capabilities** - find Blueprints calling specific functions, reading/writing specific variables, implementing events, or with specific property values
-- **Edit Blueprints** - add/remove/modify variables, functions, events, dispatchers, nodes, and components via JSON-RPC
+- **Edit Blueprints** - add/remove/modify variables, functions, events, dispatchers, nodes, components, and UMG widgets via JSON-RPC
 - **BP→C++ variable lift** - atomic multi-var rename-to-C++-friendly + remove (`edit variable lift`); recover from the `<X>_0` shadow-rename trap (`edit variable unshadow`); generate ready-to-paste UPROPERTY declarations (`cppgen upropertys`) — three commands that together collapse the BP→C++ lift workflow
 - **Cleanup tools** - detect and remove broken-type nodes/variables, purge phantom properties from compiled classes
 - **Dependency analysis** - export asset references, dependency graphs, and bidirectional reference viewer
@@ -130,6 +130,7 @@ digbp stop        # Shutdown server
 | `digbp edit purge-phantom` | Find/remove phantom properties + recompile (`--dry-run`) |
 | `digbp edit component add` | Add a component |
 | `digbp edit component remove` | Remove a component |
+| `digbp edit widget set-property` | Set a property on a UMG widget archetype (dotted path supported, e.g. `Font.Size`) |
 
 ### Common Flags
 

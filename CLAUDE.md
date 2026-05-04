@@ -216,6 +216,12 @@ digbp edit dispatcher remove --path=/Game/BP --name=OnUpdate
 digbp edit component add --path=/Game/BP --name=Mesh --class=StaticMeshComponent
 digbp edit component remove --path=/Game/BP --name=Mesh
 
+# UMG widget tree (UWidgetBlueprint only). Read side: `digbp export --path=/Game/UI/MyWidget_BP --pretty` returns a `widget_tree` field.
+digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=Text --value="Hello"
+digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=Font.Size --value=24
+digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=Font.FontObject --value=/Game/UI/Fonts/Title.Title
+digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=ColorAndOpacity --value="(R=1.0,G=0.8,B=0.4,A=1.0)"
+
 # Nodes
 digbp edit node remove --path=/Game/BP --graph=EventGraph --node-guid=GUID
 digbp edit node remove-broken --path=/Game/BP --dry-run           # Preview broken nodes
