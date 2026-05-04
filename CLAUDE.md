@@ -420,6 +420,8 @@ Module type is `Editor` (requires editor, loads at Default phase).
 - Include `UObject/Script.h` for FUNC_* flags
 - `Blueprint->PropertyGuids` does NOT exist in UE4.27 (UE5 only)
 - `UEdGraph::LocalVariables` does NOT exist in UE4.27 (UE5 only)
+- `TArray::Slice` does NOT exist in UE4.27 (UE5 only) — use manual loops
+- USTRUCTs may NOT have a UPROPERTY `TArray<Self>` field (UHT rejects with "struct recursion via arrays is unsupported"). Flatten with parent-index references and rebuild on serialize.
 - UE4 uses unity builds — static functions in anonymous namespaces across .cpp files can collide. Use unique prefixes (e.g., `EditOps_PinTypeToString`)
 - All graph iteration must include `Blueprint->DelegateSignatureGraphs` alongside FunctionGraphs/UbergraphPages/MacroGraphs — dispatchers store parameters as pins on function entry nodes in these graphs
 
