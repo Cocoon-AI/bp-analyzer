@@ -187,8 +187,11 @@ digbp edit save-and-compile --path=/Game/BP
 
 # CDO read (extends to BlueprintType-without-Blueprintable assets too —
 # USDBattlePass, USDLogbook, USDMissionAsset, UDataAsset, etc).
+# --property accepts dotted paths: struct field descent (Font.Size) and
+# subobject deref (MissionObject.TargetValue) — mixed chains supported.
 digbp edit cdo get --path=/Game/Showdown/Data/CharacterArchetypes --property=Cowboys
 digbp edit cdo get --path=/Game/Showdown/Data/Battlepasses/BattlePassLaunch --property=Rewards
+digbp edit cdo get --path=/Game/Showdown/Metagame/Missions/Clubs/MISClubsKills01 --property=MissionObject.TargetValue
 
 # Variables
 digbp edit variable list --path=/Game/BP                          # List member variables

@@ -1359,22 +1359,40 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::CdoGetProperty(const TSharedPtr<FJson
 		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("Failed to load asset at path: %s"), *Path));
 	}
 
-	FProperty* Prop = Target->GetClass()->FindPropertyByName(FName(*PropertyName));
-	if (!Prop)
+	// PropertyName may be a dotted path: "MissionObject.TargetValue" walks the
+	// MissionObject FObjectProperty into its inner SDMissionCombat subobject
+	// and reads TargetValue from there. Single-segment names ("Cowboys") still
+	// work — ResolvePropertyPath treats one segment as a direct leaf lookup.
+	// Struct intermediates ("Font.Size") also work for symmetry with
+	// edit.widget.set_property, though the typical CDO use case is subobjects.
+	FProperty* Prop = nullptr;
+	void* ValuePtr = nullptr;
+	UObject* InnermostOwner = nullptr;
+	FString WalkError;
+	if (!FBlueprintEditHelpers::ResolvePropertyPath(Target, PropertyName, Prop, ValuePtr, InnermostOwner, WalkError))
 	{
-		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("Property not found on %s: %s"), *TargetKind, *PropertyName));
+		return FBlueprintEditHelpers::MakeEditError(WalkError);
 	}
 
 	FString Exported;
-	const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Target);
 	// UE4.27: FProperty::ExportTextItem(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags)
-	Prop->ExportTextItem(Exported, ValuePtr, /*DefaultValue*/nullptr, Target, PPF_None);
+	// Pass InnermostOwner so relative object-ref resolution is anchored at the
+	// subobject containing the leaf (matters when leaf is itself an object ref).
+	Prop->ExportTextItem(Exported, ValuePtr, /*DefaultValue*/nullptr, InnermostOwner, PPF_None);
 
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("property_name"), PropertyName);
 	Response->SetStringField(TEXT("value"), Exported);
 	Response->SetStringField(TEXT("property_type"), Prop->GetCPPType());
 	Response->SetStringField(TEXT("target_kind"), TargetKind);
+	if (InnermostOwner != Target)
+	{
+		// Dot-path walked through at least one object hop; surface the leaf's
+		// actual containing object so callers can round-trip queries against it
+		// directly if they want.
+		Response->SetStringField(TEXT("leaf_owner_class"), InnermostOwner->GetClass()->GetName());
+		Response->SetStringField(TEXT("leaf_owner_path"), InnermostOwner->GetPathName());
+	}
 	return Response;
 }
 

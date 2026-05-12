@@ -381,14 +381,28 @@ func editCdoGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get",
 		Short: "Read a property value from the CDO",
+		Long: `Reads a property from a Blueprint CDO, a non-Blueprintable UObject asset
+(BlueprintType but not Blueprintable, e.g. USDBattlePass / USDLogbook /
+USDMissionAsset), or any nested subobject/struct field reachable via a
+dotted path.
+
+The --property flag accepts a dotted path. Intermediate hops can be:
+  - FStructProperty:  Font.Size                    (struct field descent)
+  - FObjectProperty:  MissionObject.TargetValue    (subobject deref)
+Mixed chains work too: MissionObject.Rewards.RewardXP.
+
+Response includes a 'target_kind' field ('blueprint_cdo' or 'uobject_asset')
+identifying which loader path was used. When dotted descent crosses one or
+more object hops, the response also reports 'leaf_owner_class' and
+'leaf_owner_path' for the actual subobject that owns the leaf property.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return callServer("edit.cdo.get_property", map[string]interface{}{
 				"path": path, "property_name": prop,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
-	cmd.Flags().StringVar(&prop, "property", "", "Property name (required)")
+	cmd.Flags().StringVar(&path, "path", "", "Blueprint or UObject asset path (required)")
+	cmd.Flags().StringVar(&prop, "property", "", "Property name or dotted path (required, e.g. Cowboys, Font.Size, MissionObject.TargetValue)")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("property")
 	return cmd

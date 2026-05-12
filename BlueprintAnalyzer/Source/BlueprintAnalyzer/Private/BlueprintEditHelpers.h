@@ -11,6 +11,7 @@ class UBlueprint;
 class UEdGraph;
 class UEdGraphNode;
 class FJsonObject;
+class FProperty;
 
 namespace FBlueprintEditHelpers
 {
@@ -71,4 +72,33 @@ namespace FBlueprintEditHelpers
 	UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& NodeGuid);
 	UEdGraphPin* FindPinByName(UEdGraphNode* Node, const FString& PinName, EEdGraphPinDirection Direction);
 	TSharedPtr<FJsonObject> NodeToEditResponse(UEdGraphNode* Node);
+
+	/** Walk a dotted property path (e.g. "Font.Size", "MissionObject.TargetValue")
+	 *  starting from a UObject. Two intermediate hop kinds are supported:
+	 *
+	 *    - FStructProperty: descends into the struct's inner FProperties without
+	 *      changing the containing UObject (used by UMG widget set-property for
+	 *      Font.Size, ColorAndOpacity.R, etc).
+	 *    - FObjectProperty: dereferences the UObject* and uses the inner object
+	 *      as the new container (used by cdo get to drill into subobject CDOs
+	 *      like USDMissionAsset.MissionObject.TargetValue). FClassProperty
+	 *      (which inherits from FObjectProperty) is rejected — UClass* targets
+	 *      have no instance state to descend into.
+	 *
+	 *  On success: OutLeaf is the final FProperty, OutPtr is the raw memory
+	 *  address of its value (suitable for ImportText/ExportTextItem), and
+	 *  OutInnermost is the UObject* that directly owns OutLeaf (== Container
+	 *  if no object hops, else the deepest dereferenced subobject; needed as
+	 *  the Parent arg for ExportTextItem so relative object-ref resolution
+	 *  works).
+	 *
+	 *  Returns false with a reason on any walk failure (missing prop, non-
+	 *  struct/non-object intermediate, null subobject mid-chain). */
+	bool ResolvePropertyPath(
+		UObject* Container,
+		const FString& DottedPath,
+		FProperty*& OutLeaf,
+		void*& OutPtr,
+		UObject*& OutInnermost,
+		FString& OutError);
 }

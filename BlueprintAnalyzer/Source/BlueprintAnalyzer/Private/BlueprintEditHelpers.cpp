@@ -11,6 +11,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Package.h"
 #include "Dom/JsonObject.h"
@@ -514,6 +515,115 @@ UEdGraphPin* FindPinByName(UEdGraphNode* Node, const FString& PinName, EEdGraphP
 	// Fallback: allow lookup without direction when caller passes EGPD_MAX-equivalent.
 	// Callers always pass a concrete direction, so we don't retry unprompted.
 	return nullptr;
+}
+
+bool ResolvePropertyPath(
+	UObject* Container,
+	const FString& DottedPath,
+	FProperty*& OutLeaf,
+	void*& OutPtr,
+	UObject*& OutInnermost,
+	FString& OutError)
+{
+	OutLeaf = nullptr;
+	OutPtr = nullptr;
+	OutInnermost = Container;
+
+	if (!Container || DottedPath.IsEmpty())
+	{
+		OutError = TEXT("Empty container or property path");
+		return false;
+	}
+
+	TArray<FString> Parts;
+	DottedPath.ParseIntoArray(Parts, TEXT("."));
+	if (Parts.Num() == 0)
+	{
+		OutError = TEXT("Empty property path after split");
+		return false;
+	}
+
+	UStruct* CurrentStruct = Container->GetClass();
+	void* CurrentPtr = Container;
+
+	for (int32 i = 0; i < Parts.Num(); ++i)
+	{
+		const bool bIsLeaf = (i == Parts.Num() - 1);
+		FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*Parts[i]));
+		if (!Prop)
+		{
+			// UE4.27 has no TArray::Slice — manually rebuild the path-so-far.
+			FString PathSoFar;
+			for (int32 j = 0; j <= i; ++j)
+			{
+				if (j > 0) { PathSoFar += TEXT("."); }
+				PathSoFar += Parts[j];
+			}
+			OutError = FString::Printf(
+				TEXT("Property '%s' not found on %s (path so far: %s)"),
+				*Parts[i],
+				*CurrentStruct->GetName(),
+				*PathSoFar);
+			return false;
+		}
+
+		if (bIsLeaf)
+		{
+			OutLeaf = Prop;
+			OutPtr = Prop->ContainerPtrToValuePtr<void>(CurrentPtr);
+			return true;
+		}
+
+		// Intermediate hop. Two supported kinds:
+
+		// 1. FStructProperty: descend into struct fields (e.g. Font.Size).
+		if (FStructProperty* SP = CastField<FStructProperty>(Prop))
+		{
+			CurrentStruct = SP->Struct;
+			CurrentPtr = SP->ContainerPtrToValuePtr<void>(CurrentPtr);
+			continue;
+		}
+
+		// 2. FObjectProperty: dereference the UObject* and pivot the container
+		// to the inner subobject (e.g. MissionObject.TargetValue, where
+		// MissionObject is an InstancedReference to SDMissionCombat). Reject
+		// FClassProperty (UClass* refs) — they're FObjectProperty subclasses
+		// but have no instance state to walk into.
+		if (FObjectProperty* OP = CastField<FObjectProperty>(Prop))
+		{
+			if (CastField<FClassProperty>(Prop))
+			{
+				OutError = FString::Printf(
+					TEXT("Intermediate '%s' is a class reference (UClass*), not an object — cannot descend"),
+					*Parts[i]);
+				return false;
+			}
+
+			UObject* Inner = OP->GetObjectPropertyValue(OP->ContainerPtrToValuePtr<void>(CurrentPtr));
+			if (!Inner)
+			{
+				OutError = FString::Printf(
+					TEXT("Intermediate subobject '%s' is null on %s"),
+					*Parts[i],
+					*CurrentStruct->GetName());
+				return false;
+			}
+			CurrentStruct = Inner->GetClass();
+			CurrentPtr = Inner;
+			OutInnermost = Inner;
+			continue;
+		}
+
+		OutError = FString::Printf(
+			TEXT("Intermediate '%s' is not a struct or object (was %s); dotted descent only supports struct/object hops"),
+			*Parts[i],
+			*Prop->GetClass()->GetName());
+		return false;
+	}
+
+	// Loop should have returned at the leaf; defensive fallback.
+	OutError = TEXT("Property path walk exited without resolving a leaf");
+	return false;
 }
 
 TSharedPtr<FJsonObject> NodeToEditResponse(UEdGraphNode* Node)

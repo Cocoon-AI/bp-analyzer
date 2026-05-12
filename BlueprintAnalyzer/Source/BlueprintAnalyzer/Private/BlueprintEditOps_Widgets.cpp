@@ -19,82 +19,6 @@
 namespace
 {
 	using FBlueprintEditHelpers::RequireString;
-
-	// Walk a dotted property path (e.g. "Font.Size") starting from a UObject,
-	// descending through FStructProperty hops. On success, returns the leaf
-	// FProperty + its memory pointer for ImportText. Returns false with a
-	// reason for any walk failure (missing prop, non-struct intermediate).
-	static bool ResolvePropertyPath(
-		UObject* Container,
-		const FString& DottedPath,
-		FProperty*& OutLeaf,
-		void*& OutPtr,
-		FString& OutError)
-	{
-		if (!Container || DottedPath.IsEmpty())
-		{
-			OutError = TEXT("Empty container or property path");
-			return false;
-		}
-
-		TArray<FString> Parts;
-		DottedPath.ParseIntoArray(Parts, TEXT("."));
-		if (Parts.Num() == 0)
-		{
-			OutError = TEXT("Empty property path after split");
-			return false;
-		}
-
-		UStruct* CurrentStruct = Container->GetClass();
-		void* CurrentPtr = Container;
-
-		for (int32 i = 0; i < Parts.Num(); ++i)
-		{
-			const bool bIsLeaf = (i == Parts.Num() - 1);
-			FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*Parts[i]));
-			if (!Prop)
-			{
-				// UE4.27 has no TArray::Slice — manually rebuild the path-so-far.
-				FString PathSoFar;
-				for (int32 j = 0; j <= i; ++j)
-				{
-					if (j > 0) { PathSoFar += TEXT("."); }
-					PathSoFar += Parts[j];
-				}
-				OutError = FString::Printf(
-					TEXT("Property '%s' not found on %s (path so far: %s)"),
-					*Parts[i],
-					*CurrentStruct->GetName(),
-					*PathSoFar);
-				return false;
-			}
-
-			if (bIsLeaf)
-			{
-				OutLeaf = Prop;
-				OutPtr = Prop->ContainerPtrToValuePtr<void>(CurrentPtr);
-				return true;
-			}
-
-			// Intermediate hop must be a struct so we can descend into its
-			// inner FProperties (FStructProperty wraps a UScriptStruct).
-			FStructProperty* SP = CastField<FStructProperty>(Prop);
-			if (!SP)
-			{
-				OutError = FString::Printf(
-					TEXT("Intermediate '%s' is not a struct (was %s); only struct properties support dotted descent"),
-					*Parts[i],
-					*Prop->GetClass()->GetName());
-				return false;
-			}
-			CurrentStruct = SP->Struct;
-			CurrentPtr = SP->ContainerPtrToValuePtr<void>(CurrentPtr);
-		}
-
-		// Loop should have returned at the leaf; defensive fallback.
-		OutError = TEXT("Property path walk exited without resolving a leaf");
-		return false;
-	}
 }
 
 //------------------------------------------------------------------------------
@@ -154,13 +78,14 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::WidgetSetProperty(const TSharedPtr<FJ
 
 	FProperty* LeafProp = nullptr;
 	void* LeafPtr = nullptr;
+	UObject* InnermostOwner = nullptr;
 	FString WalkError;
-	if (!ResolvePropertyPath(Target, PropertyName, LeafProp, LeafPtr, WalkError))
+	if (!FBlueprintEditHelpers::ResolvePropertyPath(Target, PropertyName, LeafProp, LeafPtr, InnermostOwner, WalkError))
 	{
 		return FBlueprintEditHelpers::MakeEditError(WalkError);
 	}
 
-	const TCHAR* ImportResult = LeafProp->ImportText(*Value, LeafPtr, PPF_None, Target);
+	const TCHAR* ImportResult = LeafProp->ImportText(*Value, LeafPtr, PPF_None, InnermostOwner);
 	if (ImportResult == nullptr)
 	{
 		return FBlueprintEditHelpers::MakeEditError(
