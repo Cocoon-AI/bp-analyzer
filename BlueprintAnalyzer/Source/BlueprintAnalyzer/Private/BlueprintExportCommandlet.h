@@ -136,6 +136,24 @@ public:
 	// matches the names lift will produce.
 	TSharedPtr<FJsonObject> CppGenUPropertysToJson(const FString& BlueprintPath, const TArray<FString>& VarsFilter, const FString& Category, bool bRawNames);
 
+	// --- DataTable inspection (BlueprintExportDataTable.cpp) ---
+	// Read-only loaders for UDataTable assets. The RowStruct can be any USTRUCT
+	// (game-defined or engine-defined); column values are exported via
+	// FProperty::ExportTextItem to the same UE text format used elsewhere in
+	// digbp (cdo get, component set-property, etc).
+
+	// Row-struct schema: { row_struct, row_struct_path, columns: [{name, type, class}, ...] }
+	TSharedPtr<FJsonObject> DataTableSchemaToJson(const FString& Path);
+
+	// Just the row keys: { row_keys: ["bnd_pass01_01", ...], row_count }
+	TSharedPtr<FJsonObject> DataTableRowsToJson(const FString& Path);
+
+	// Single row by name: { row_key, row_struct, row_data: { col_name: text, ... } }
+	TSharedPtr<FJsonObject> DataTableGetRowToJson(const FString& Path, const FString& RowKey);
+
+	// Full table contents: { row_struct, row_count, rows: { row_key: { col: text }, ... } }
+	TSharedPtr<FJsonObject> DataTableDumpToJson(const FString& Path);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

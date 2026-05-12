@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,6 +65,7 @@ func main() {
 		cppAuditCmd(),
 		widgetTreeCmd(),
 		cppGenCmd(),
+		datatableCmd(),
 		editCmd(),
 		versionCmd(),
 	)
@@ -117,6 +119,12 @@ func normalizeOutPath(p string) string {
 
 // callServerToFile behaves like callServer but writes the result JSON to a file
 // instead of stdout. Pretty-prints if --pretty is set.
+//
+// The echoed output path is resolved to an absolute path so a bare `/tmp/foo`
+// under git-bash (where MSYS_NO_PATHCONV=1 leaves the literal `/tmp/`) is
+// reported as the real Windows path it landed at — e.g. `D:\tmp\foo` if the
+// caller's drive is D:. Without this, the echo line agreed with the input
+// while the file landed at a surprise location.
 func callServerToFile(method string, params interface{}, outPath string) error {
 	if err := server.EnsureRunning(cfg); err != nil {
 		return err
@@ -135,6 +143,9 @@ func callServerToFile(method string, params interface{}, outPath string) error {
 		}
 	}
 	resolved := normalizeOutPath(outPath)
+	if abs, err := filepath.Abs(resolved); err == nil {
+		resolved = abs
+	}
 	if err := os.WriteFile(resolved, payload, 0644); err != nil {
 		return fmt.Errorf("write output file: %w", err)
 	}

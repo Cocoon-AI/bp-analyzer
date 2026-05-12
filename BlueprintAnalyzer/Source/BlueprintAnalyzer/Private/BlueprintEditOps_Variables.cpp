@@ -1326,36 +1326,55 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::CdoGetProperty(const TSharedPtr<FJson
 	if (!RequireString(Params, TEXT("path"), Path, Err)) { return Err; }
 	if (!RequireString(Params, TEXT("property_name"), PropertyName, Err)) { return Err; }
 
-	FString LoadError;
-	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
-	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
-
-	if (!Blueprint->GeneratedClass)
+	// Read target resolution. Two cases:
+	//   1. UBlueprint asset (Blueprintable) -> read from GeneratedClass->GetDefaultObject().
+	//   2. Plain UObject asset (BlueprintType but not Blueprintable, e.g. USDBattlePass,
+	//      USDLogbook, USDMissionAsset, UDataAsset subclasses) -> read from the loaded
+	//      asset instance directly. These have no UBlueprint wrapper but their .uasset
+	//      files contain a fully-populated UObject we can introspect the same way.
+	UObject* Target = nullptr;
+	FString TargetKind;
 	{
-		return FBlueprintEditHelpers::MakeEditError(TEXT("Blueprint has no GeneratedClass; compile it first"));
+		FString LoadError;
+		UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
+		if (Blueprint)
+		{
+			if (!Blueprint->GeneratedClass)
+			{
+				return FBlueprintEditHelpers::MakeEditError(TEXT("Blueprint has no GeneratedClass; compile it first"));
+			}
+			Target = Blueprint->GeneratedClass->GetDefaultObject();
+			TargetKind = TEXT("blueprint_cdo");
+		}
+		else
+		{
+			// Not a UBlueprint asset — try as a plain UObject (non-Blueprintable CDO).
+			Target = LoadObject<UObject>(nullptr, *Path);
+			if (Target) { TargetKind = TEXT("uobject_asset"); }
+		}
 	}
 
-	UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject();
-	if (!CDO)
+	if (!Target)
 	{
-		return FBlueprintEditHelpers::MakeEditError(TEXT("Could not obtain CDO"));
+		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("Failed to load asset at path: %s"), *Path));
 	}
 
-	FProperty* Prop = CDO->GetClass()->FindPropertyByName(FName(*PropertyName));
+	FProperty* Prop = Target->GetClass()->FindPropertyByName(FName(*PropertyName));
 	if (!Prop)
 	{
-		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("Property not found on CDO: %s"), *PropertyName));
+		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("Property not found on %s: %s"), *TargetKind, *PropertyName));
 	}
 
 	FString Exported;
-	const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(CDO);
+	const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Target);
 	// UE4.27: FProperty::ExportTextItem(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags)
-	Prop->ExportTextItem(Exported, ValuePtr, /*DefaultValue*/nullptr, CDO, PPF_None);
+	Prop->ExportTextItem(Exported, ValuePtr, /*DefaultValue*/nullptr, Target, PPF_None);
 
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("property_name"), PropertyName);
 	Response->SetStringField(TEXT("value"), Exported);
 	Response->SetStringField(TEXT("property_type"), Prop->GetCPPType());
+	Response->SetStringField(TEXT("target_kind"), TargetKind);
 	return Response;
 }
 

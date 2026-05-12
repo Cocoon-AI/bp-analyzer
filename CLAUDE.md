@@ -164,6 +164,13 @@ digbp widget-tree --dir=/Game/ --flat --class=TextBlock          # one row per T
 digbp widget-tree --dir=/Game/ --flat --class=TextBlock,EditableTextBox --properties=Font \
     --where='Font~/Engine/EngineFonts' --out=fonts.json          # engine-fallback-font hunt
 
+# DataTable inspection (read-only)
+digbp datatable schema --path=/Game/Showdown/Data/GlobalBattlePasses
+digbp datatable rows --path=/Game/Showdown/Data/Battlepasses/BattlePassDataLaunch01
+digbp datatable get --path=/Game/Showdown/Data/Battlepasses/BattlePassDataLaunch01 --row=Row_1
+digbp datatable dump --path=/Game/Showdown/Data/Battlepasses/BattlePassDataLaunch01
+digbp datatable dump --path=/Game/Data/ItemCatalog --out=items.json    # large tables → file
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```
@@ -177,6 +184,11 @@ All edit operations stage changes in memory until explicitly saved with `edit sa
 digbp edit compile --path=/Game/BP
 digbp edit save --path=/Game/BP
 digbp edit save-and-compile --path=/Game/BP
+
+# CDO read (extends to BlueprintType-without-Blueprintable assets too —
+# USDBattlePass, USDLogbook, USDMissionAsset, UDataAsset, etc).
+digbp edit cdo get --path=/Game/Showdown/Data/CharacterArchetypes --property=Cowboys
+digbp edit cdo get --path=/Game/Showdown/Data/Battlepasses/BattlePassLaunch --property=Rewards
 
 # Variables
 digbp edit variable list --path=/Game/BP                          # List member variables
