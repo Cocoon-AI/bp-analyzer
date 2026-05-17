@@ -1,6 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +30,10 @@ buffering.`,
 		datatableRowsCmd(),
 		datatableGetCmd(),
 		datatableDumpCmd(),
+		datatableSetCmd(),
+		datatableSetManyCmd(),
+		datatableSaveCmd(),
+		datatableRewritePathsCmd(),
 	)
 	return cmd
 }
@@ -101,5 +109,145 @@ prefer --out=file.json over stdout.`,
 	cmd.Flags().StringVar(&path, "path", "", "DataTable asset path (required)")
 	cmd.Flags().StringVar(&out, "out", "", "Write output to file instead of stdout")
 	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func datatableSetCmd() *cobra.Command {
+	var (
+		path   string
+		row    string
+		column string
+		value  string
+	)
+	cmd := &cobra.Command{
+		Use:   "set",
+		Short: "Set a single cell in a DataTable row",
+		Long: `Mutates the row in memory and marks the package dirty. Follow up with
+'datatable save' to persist. SCC (p4 edit / git) is the caller's job.
+
+--value uses the same UE text-format that 'datatable get' returns, so
+round-tripping a get output works:
+  bool:            True / False
+  number:          24
+  FName:           MyName     (or "Quoted Name" — quotes are optional)
+  FString/FText:   "some text"
+  FVector:         (X=1,Y=2,Z=3)
+  FLinearColor:    (R=1,G=0.8,B=0.4,A=1)
+  Soft object ref: /Game/Path/Asset.Asset
+  Array:           (a,b,c)    — empty array: ()
+  Map:             ((k=v),(k2=v2))
+
+Empty arrays via "()" are explicitly normalized to zero-element on the
+server side; ImportText would otherwise produce a single-empty-element
+array for FArrayProperty<FName>.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("datatable.set", map[string]interface{}{
+				"path":   path,
+				"row":    row,
+				"column": column,
+				"value":  value,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "DataTable asset path (required)")
+	cmd.Flags().StringVar(&row, "row", "", "Row key (required)")
+	cmd.Flags().StringVar(&column, "column", "", "Column name (required)")
+	cmd.Flags().StringVar(&value, "value", "", "UE text-format value (required, may be empty string)")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("row")
+	_ = cmd.MarkFlagRequired("column")
+	return cmd
+}
+
+func datatableSetManyCmd() *cobra.Command {
+	var (
+		path     string
+		jsonPath string
+	)
+	cmd := &cobra.Command{
+		Use:   "set-many",
+		Short: "Batch-set many cells from a JSON file",
+		Long: `Reads a JSON file of shape:
+  { "rows": { "<row_key>": { "<column>": "<value>", ... }, ... } }
+and applies every (row, column) update. Targets are pre-validated against
+the row map and row-struct schema before any write happens — so a typo in
+a row key or column name aborts cleanly. ImportText failures mid-batch
+are reported with failed_row + failed_column; writes that already landed
+before the failure stay landed.
+
+Marks the package dirty once at the end. Follow with 'datatable save'.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(jsonPath)
+			if err != nil {
+				return fmt.Errorf("read --json %s: %w", jsonPath, err)
+			}
+			var parsed struct {
+				Rows map[string]map[string]interface{} `json:"rows"`
+			}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				return fmt.Errorf("parse --json %s: %w", jsonPath, err)
+			}
+			if parsed.Rows == nil {
+				return fmt.Errorf("--json file missing top-level 'rows' object")
+			}
+			return callServer("datatable.set_many", map[string]interface{}{
+				"path": path,
+				"rows": parsed.Rows,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "DataTable asset path (required)")
+	cmd.Flags().StringVar(&jsonPath, "json", "", "Path to JSON file with updates (required)")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("json")
+	return cmd
+}
+
+func datatableSaveCmd() *cobra.Command {
+	var path string
+	cmd := &cobra.Command{
+		Use:   "save",
+		Short: "Persist a dirty DataTable's package to disk",
+		Long: `Same semantics as 'edit save' — bOnlyDirty=true. Returns
+{saved: false, not_dirty: true} as a distinct success if the package is
+already clean. SCC checkout (p4 edit / git) is the caller's job.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("datatable.save", map[string]interface{}{"path": path})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "DataTable asset path (required)")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func datatableRewritePathsCmd() *cobra.Command {
+	var (
+		path string
+		from string
+		to   string
+	)
+	cmd := &cobra.Command{
+		Use:   "rewrite-paths",
+		Short: "Substring-rewrite all FSoftObjectProperty/FSoftClassProperty paths in a DataTable",
+		Long: `Walks every row, for every FSoftObjectProperty/FSoftClassProperty column,
+does a substring replace From -> To on the stored asset path. Useful for
+asset-move cleanup (e.g. /Game/Showdown/NFT/... -> /Game/Showdown/Characters/...
+in one call instead of N 'datatable set' invocations).
+
+Returns { rewritten_count, rows_touched, changes: [{row, column, from, to}] }.
+Marks dirty if any rewrite occurred. Follow with 'datatable save'.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("datatable.rewrite_paths", map[string]interface{}{
+				"path": path,
+				"from": from,
+				"to":   to,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "DataTable asset path (required)")
+	cmd.Flags().StringVar(&from, "from", "", "Substring to find (required)")
+	cmd.Flags().StringVar(&to, "to", "", "Substring to replace with (required, may be empty)")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("from")
 	return cmd
 }

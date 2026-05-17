@@ -154,6 +154,30 @@ public:
 	// Full table contents: { row_struct, row_count, rows: { row_key: { col: text }, ... } }
 	TSharedPtr<FJsonObject> DataTableDumpToJson(const FString& Path);
 
+	// --- DataTable write operations ---
+	// All writes mutate the loaded UDataTable in memory and mark its package
+	// dirty; callers must `datatable save` (or equivalent) to persist. SCC
+	// (p4 edit / git) is the caller's responsibility.
+
+	// Single-field write: ImportText the value into row[column]. Mirrors the
+	// UE text-format that DataTableGetRowToJson returns.
+	TSharedPtr<FJsonObject> DataTableSetCellToJson(const FString& Path, const FString& RowKey, const FString& Column, const FString& Value);
+
+	// Batch write: Updates is a JSON object of shape
+	//   { "row_key": { "column": "value", ... }, ... }
+	// Failure on any (row, col) aborts the batch — no partial writes. The
+	// failing row+col is reported in the error.
+	TSharedPtr<FJsonObject> DataTableSetManyToJson(const FString& Path, const TSharedPtr<FJsonObject>& Updates);
+
+	// Persist the table's package to disk (if dirty). Same semantics as
+	// edit.save — bOnlyDirty=true.
+	TSharedPtr<FJsonObject> DataTableSaveToJson(const FString& Path);
+
+	// Bulk substring rewrite across every FSoftObjectProperty / FSoftClassProperty
+	// in every row. Used for asset-move cleanup (e.g. /Game/Showdown/NFT/...
+	// → /Game/Showdown/Characters/.../). Returns { rewritten_count, changes }.
+	TSharedPtr<FJsonObject> DataTableRewritePathsToJson(const FString& Path, const FString& From, const FString& To);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

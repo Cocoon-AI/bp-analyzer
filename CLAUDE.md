@@ -171,6 +171,15 @@ digbp datatable get --path=/Game/Showdown/Data/Battlepasses/BattlePassDataLaunch
 digbp datatable dump --path=/Game/Showdown/Data/Battlepasses/BattlePassDataLaunch01
 digbp datatable dump --path=/Game/Data/ItemCatalog --out=items.json    # large tables → file
 
+# DataTable mutation (in-memory; must follow with `datatable save` to persist).
+# SCC (p4 edit / git) is the caller's job.
+digbp datatable set --path=/Game/Data/ItemCatalog --row=itm_hat_a01 --column=ItemStaticMesh \
+    --value=/Game/Showdown/Characters/Cowgirl/Moda/Meshes/S_CowgirlHat_Chic_A.S_CowgirlHat_Chic_A
+digbp datatable set-many --path=/Game/Data/ItemCatalog --json=updates.json   # {rows:{row:{col:val}}}
+digbp datatable rewrite-paths --path=/Game/Data/ItemCatalog \
+    --from=/Game/Showdown/NFT/ --to=/Game/Showdown/Characters/   # bulk soft-ref rewrite
+digbp datatable save --path=/Game/Data/ItemCatalog
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```

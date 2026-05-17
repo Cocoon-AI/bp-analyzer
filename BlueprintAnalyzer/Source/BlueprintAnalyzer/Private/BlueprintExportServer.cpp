@@ -708,6 +708,73 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Commandlet->DataTableDumpToJson(Path));
 	}
 
+	if (Method == TEXT("datatable.set"))
+	{
+		FString Path, Row, Column, Value;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetStringField(TEXT("row"), Row) || Row.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: row"));
+		}
+		if (!Params->TryGetStringField(TEXT("column"), Column) || Column.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: column"));
+		}
+		// value may legitimately be empty string ("") for clearing FName/FString cells.
+		if (!Params->TryGetStringField(TEXT("value"), Value))
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: value"));
+		}
+		return MakeResponse(Id, Commandlet->DataTableSetCellToJson(Path, Row, Column, Value));
+	}
+
+	if (Method == TEXT("datatable.set_many"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		const TSharedPtr<FJsonObject>* RowsObj = nullptr;
+		if (!Params->TryGetObjectField(TEXT("rows"), RowsObj) || !RowsObj)
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: rows (object)"));
+		}
+		return MakeResponse(Id, Commandlet->DataTableSetManyToJson(Path, *RowsObj));
+	}
+
+	if (Method == TEXT("datatable.save"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		return MakeResponse(Id, Commandlet->DataTableSaveToJson(Path));
+	}
+
+	if (Method == TEXT("datatable.rewrite_paths"))
+	{
+		FString Path, From, To;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetStringField(TEXT("from"), From) || From.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: from"));
+		}
+		// 'to' may be empty to delete the substring.
+		if (!Params->TryGetStringField(TEXT("to"), To))
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: to"));
+		}
+		return MakeResponse(Id, Commandlet->DataTableRewritePathsToJson(Path, From, To));
+	}
+
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));
 }
 
