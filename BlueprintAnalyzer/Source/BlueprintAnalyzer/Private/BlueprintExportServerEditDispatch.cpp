@@ -64,6 +64,7 @@ TSharedPtr<FJsonObject> DispatchEditRequest(const FString& Method, const TShared
 	if (Method == TEXT("edit.component.set_property")) { return FBlueprintEditOps::ComponentSetProperty(Params); }
 
 	if (Method == TEXT("edit.widget.set_property"))    { return FBlueprintEditOps::WidgetSetProperty(Params); }
+	if (Method == TEXT("edit.widget.rename"))          { return FBlueprintEditOps::WidgetRename(Params); }
 
 	// --- Phase D: node graph editing ---
 

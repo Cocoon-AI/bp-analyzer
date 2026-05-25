@@ -410,18 +410,33 @@ more object hops, the response also reports 'leaf_owner_class' and
 
 func editCdoSetCmd() *cobra.Command {
 	var path, prop, value string
+	var save, saveAndCompile bool
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Set a property value on the CDO (e.g. bCanBeDamaged=true on AActor)",
+		Long: `Sets a property on the CDO. Like all edit ops, the change is STAGED IN MEMORY
+by default — the response carries "staged": true and a "persist_with" hint. To
+persist to disk you must follow with 'edit save-and-compile' (the CDO value is
+written on save and carried across recompile-on-load by the reinstancer).
+
+Convenience: --save-and-compile persists in the same call (recommended for CDO
+defaults); --save writes without recompiling. Staging stays the default so this
+stays consistent with the other edit ops' stage-then-save convention.
+
+  digbp edit cdo set --path=/Game/UI/MyModal --property=CardClass \
+    --value="WidgetBlueprintGeneratedClass'/Game/UI/SD_Card.SD_Card_C'" --save-and-compile`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return callServer("edit.cdo.set_property", map[string]interface{}{
 				"path": path, "property_name": prop, "value": value,
+				"save": save, "save_and_compile": saveAndCompile,
 			})
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Blueprint asset path (required)")
 	cmd.Flags().StringVar(&prop, "property", "", "Property name (required)")
 	cmd.Flags().StringVar(&value, "value", "", "Value as UE text format (required)")
+	cmd.Flags().BoolVar(&save, "save", false, "Persist to disk after setting (save only, no recompile)")
+	cmd.Flags().BoolVar(&saveAndCompile, "save-and-compile", false, "Compile + save after setting (recommended for CDO defaults)")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("property")
 	return cmd

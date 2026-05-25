@@ -70,6 +70,17 @@ namespace FBlueprintEditHelpers
 
 	UEdGraph* FindGraphByName(UBlueprint* Blueprint, const FString& GraphName, FString& OutError);
 	UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& NodeGuid);
+
+	/** Find an event-dispatcher signature graph by name (UBlueprint::DelegateSignatureGraphs).
+	 *  Returns nullptr when no dispatcher of that name exists. */
+	UEdGraph* FindDelegateSignatureGraph(UBlueprint* Blueprint, const FName& Name);
+
+	/** Tear down an event dispatcher the way the editor's "Delete Event Dispatcher"
+	 *  does: remove its multicast-delegate member variable AND its signature graph,
+	 *  then revalidate Create Delegate nodes. Removing only one orphans the other and
+	 *  trips KismetCompiler's "No delegate property found" warning. Safe when the
+	 *  member variable is already gone (recovers pre-orphaned signature graphs). */
+	void RemoveEventDispatcher(UBlueprint* Blueprint, UEdGraph* SignatureGraph);
 	UEdGraphPin* FindPinByName(UEdGraphNode* Node, const FString& PinName, EEdGraphPinDirection Direction);
 	TSharedPtr<FJsonObject> NodeToEditResponse(UEdGraphNode* Node);
 

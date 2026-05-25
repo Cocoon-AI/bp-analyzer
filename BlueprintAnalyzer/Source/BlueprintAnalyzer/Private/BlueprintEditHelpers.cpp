@@ -10,9 +10,12 @@
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "K2Node_CreateDelegate.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -659,6 +662,58 @@ TSharedPtr<FJsonObject> NodeToEditResponse(UEdGraphNode* Node)
 	Obj->SetArrayField(TEXT("pins"), PinsArr);
 
 	return Obj;
+}
+
+//------------------------------------------------------------------------------
+// FindDelegateSignatureGraph / RemoveEventDispatcher
+//
+// An event dispatcher is two coupled objects: a multicast-delegate entry in
+// UBlueprint::NewVariables and a signature graph (same name) in
+// UBlueprint::DelegateSignatureGraphs. Removing only one orphans the other —
+// notably KismetCompiler's NoDelegateProperty_Error warns "No delegate property
+// found for X" when a signature graph survives without its property. These
+// helpers keep the pair in sync.
+//------------------------------------------------------------------------------
+
+UEdGraph* FindDelegateSignatureGraph(UBlueprint* Blueprint, const FName& Name)
+{
+	if (!Blueprint) { return nullptr; }
+	for (UEdGraph* Graph : Blueprint->DelegateSignatureGraphs)
+	{
+		if (Graph && Graph->GetFName() == Name)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+void RemoveEventDispatcher(UBlueprint* Blueprint, UEdGraph* SignatureGraph)
+{
+	if (!Blueprint || !SignatureGraph) { return; }
+
+	const FName DispatcherName = SignatureGraph->GetFName();
+
+	Blueprint->Modify();
+	SignatureGraph->Modify();
+
+	// Canonical teardown, mirroring SMyBlueprint::OnDeleteDelegate: remove the
+	// multicast-delegate member variable, then the signature graph. Neither call
+	// removes the other's object, so both are required. RemoveMemberVariable is a
+	// safe no-op when the property is already gone, which recovers signature graphs
+	// that were orphaned by a prior plain `variable remove`.
+	FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, DispatcherName);
+	FBlueprintEditorUtils::RemoveGraph(Blueprint, SignatureGraph, EGraphRemoveFlags::Recompile);
+
+	// Revalidate any Create Delegate nodes that bound the now-deleted delegate so
+	// stale bindings surface as broken pins rather than silently dangling.
+	for (TObjectIterator<UK2Node_CreateDelegate> It(RF_ClassDefaultObject, /*bIncludeDerivedClasses*/ true, /*InternalExcludeFlags*/ EInternalObjectFlags::PendingKill); It; ++It)
+	{
+		if (!It->IsPendingKill() && It->GetGraph() && !It->GetGraph()->IsPendingKill())
+		{
+			It->HandleAnyChange();
+		}
+	}
 }
 
 } // namespace FBlueprintEditHelpers

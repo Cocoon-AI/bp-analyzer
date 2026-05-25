@@ -202,12 +202,18 @@ digbp edit cdo get --path=/Game/Showdown/Data/CharacterArchetypes --property=Cow
 digbp edit cdo get --path=/Game/Showdown/Data/Battlepasses/BattlePassLaunch --property=Rewards
 digbp edit cdo get --path=/Game/Showdown/Metagame/Missions/Clubs/MISClubsKills01 --property=MissionObject.TargetValue
 
+# CDO write. Stages in memory by default (response: staged:true, persist_with) —
+# must follow with save-and-compile or the value is lost on restart. --save-and-compile
+# persists in one call (recommended for CDO defaults); --save writes without recompiling.
+digbp edit cdo set --path=/Game/UI/MyModal --property=CardClass --value="WidgetBlueprintGeneratedClass'/Game/UI/SD_Card.SD_Card_C'" --save-and-compile
+
 # Variables
 digbp edit variable list --path=/Game/BP                          # List member variables
 digbp edit variable list --path=/Game/BP --include-broken         # Include vars with deleted types
 digbp edit variable add --path=/Game/BP --name=Health --type=float
 digbp edit variable remove --path=/Game/BP --name=Health
 digbp edit variable remove --path=/Game/BP --name=Broken --force  # Force-remove broken-type vars
+digbp edit variable remove --path=/Game/BP --name=OnClick         # Dispatcher-typed: also clears its DelegateSignatureGraphs entry (no orphaned-graph warning); recovers graphs already orphaned by an earlier remove
 digbp edit variable rename --path=/Game/BP --old-name=Hp --new-name=Health
 digbp edit variable unshadow --path=/Game/BP --dry-run            # Retarget <X>_0 shadow refs → <X>
 digbp edit variable unshadow --path=/Game/BP                      # Apply
@@ -239,7 +245,7 @@ digbp edit event add-custom --path=/Game/BP --name=OnReady
 digbp edit event remove --path=/Game/BP --name=OnReady
 digbp edit event implement --path=/Game/BP --event=ReceiveBeginPlay
 
-# Event dispatchers
+# Event dispatchers (removes both the multicast-delegate variable and its signature graph)
 digbp edit dispatcher remove --path=/Game/BP --name=OnUpdate
 
 # Components
@@ -251,6 +257,12 @@ digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText -
 digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=Font.Size --value=24
 digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=Font.FontObject --value=/Game/UI/Fonts/Title.Title
 digbp edit widget set-property --path=/Game/UI/MyWidget_BP --widget=StatusText --property=ColorAndOpacity --value="(R=1.0,G=0.8,B=0.4,A=1.0)"
+
+# Rename a widget + retarget all internal refs (FName + auto-var, VariableGet/Set,
+# ComponentBoundEvent bindings, delegate/animation/navigation bindings). Headless
+# port of the UMG editor's rename. Bypasses the name-collision check when the new
+# name matches a parent-class meta=(BindWidget) prop (the reparent-onto-C++-base case).
+digbp edit widget rename --path=/Game/Showdown/UI/Elements/SD_EmoteSelectMenu --old-name=EmoteCardHolder --new-name=CardHolder
 
 # Nodes
 digbp edit node remove --path=/Game/BP --graph=EventGraph --node-guid=GUID
@@ -454,6 +466,10 @@ Module type is `Editor` (requires editor, loads at Default phase).
 - USTRUCTs may NOT have a UPROPERTY `TArray<Self>` field (UHT rejects with "struct recursion via arrays is unsupported"). Flatten with parent-index references and rebuild on serialize.
 - UE4 uses unity builds — static functions in anonymous namespaces across .cpp files can collide. Use unique prefixes (e.g., `EditOps_PinTypeToString`)
 - All graph iteration must include `Blueprint->DelegateSignatureGraphs` alongside FunctionGraphs/UbergraphPages/MacroGraphs — dispatchers store parameters as pins on function entry nodes in these graphs
+- An event dispatcher is TWO coupled objects: a multicast-delegate entry in `NewVariables` AND a signature graph (same name) in `DelegateSignatureGraphs`. Removing only one orphans the other — a surviving signature graph trips KismetCompiler's "No delegate property found for X" warning every compile. Always tear down both via `FBlueprintEditHelpers::RemoveEventDispatcher` (RemoveMemberVariable + RemoveGraph + revalidate CreateDelegate nodes), the path shared by `variable remove` (dispatcher-typed) and `dispatcher remove`. `RemoveGraph` does NOT remove the property and `RemoveMemberVariable` does NOT remove the graph.
+- Setting a property on a CDO (or any archetype/default object) programmatically must mirror the editor's commit path, NOT a raw `FProperty::ImportText`. The full sequence (per `FPropertyValueImpl::ImportText`) is `CDO->SetFlags(RF_Transactional); CDO->Modify(); CDO->PreEditChange(Prop);` → ImportText → `CDO->PostEditChangeProperty(FPropertyChangedEvent(Prop, EPropertyChangeType::ValueSet)); CDO->MarkPackageDirty();` then `MarkBlueprintAsModified` (CL 16019; raw ImportText + MarkBlueprintAsModified alone is insufficient). If the blueprint isn't up-to-date, compile FIRST so the value lands on an established CDO that a later structural recompile won't regenerate away (CL 16022).
+- CDO-write persistence is a two-step contract, and `cdo get` masks step 2: the set only mutates the in-memory CDO (so `cdo get`, reading that same live CDO, always shows the new value), but it is NOT on disk until an `edit save`. For a CDO default to survive recompile-on-load you generally want `save-and-compile`; the on-disk CDO is then carried into the regenerated CDO by the reinstancer's `CopyPropertiesForUnrelatedObjects` (KismetReinstanceUtilities.cpp). A staged-but-unsaved set reads back correct yet loads null after restart — the #1 false-positive when debugging "I set it but runtime is null." `cdo set` flags this in its response (`staged:true`, `persist_with`) and takes opt-in `--save` / `--save-and-compile` (CL 16025); staging stays the default, consistent with all edit ops.
+- A `cdo set` on a WidgetBlueprint changes only that widget's CDO default — it does NOT reach instances of the widget EMBEDDED in other WidgetBlueprints' trees. An embedded child widget is a serialized instance in the parent's WidgetTree and can carry a baked per-instance override (e.g. a stale `None`) that wins over the corrected child CDO at runtime. Symptom: child CDO is correct (cdo get + saved) yet the parent's embedded instance still shows the old value in PIE. Fix each embedder with `edit widget set-property --path=<ParentBP> --widget=<EmbeddedChildName> --property=... ` + save-and-compile the parent (gamedev hit this with SD_OutfitSelectorMenu embedded in SD_Outfitter; CL 16027). Same instance-overrides-archetype rule as actor component instances.
 
 ### Testing
 

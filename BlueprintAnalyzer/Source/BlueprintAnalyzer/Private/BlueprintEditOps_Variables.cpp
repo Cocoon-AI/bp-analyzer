@@ -264,7 +264,20 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableRemove(const TSharedPtr<FJson
 	const FName VarName(*Name);
 	const int32 Idx = FindVariableIndex(Blueprint, VarName);
 
-	if (Idx != INDEX_NONE)
+	// Event dispatchers are multicast-delegate variables paired with a signature
+	// graph in DelegateSignatureGraphs. A plain member-variable removal deletes only
+	// the property and orphans the graph (KismetCompiler then warns "No delegate
+	// property found for X" on every compile). If a signature graph of this name
+	// exists, tear down the dispatcher properly — this also recovers graphs already
+	// orphaned by an earlier plain remove (NewVariables entry absent, graph present).
+	UEdGraph* SignatureGraph = FBlueprintEditHelpers::FindDelegateSignatureGraph(Blueprint, VarName);
+	const bool bDispatcher = (SignatureGraph != nullptr);
+
+	if (bDispatcher)
+	{
+		FBlueprintEditHelpers::RemoveEventDispatcher(Blueprint, SignatureGraph);
+	}
+	else if (Idx != INDEX_NONE)
 	{
 		if (bForce)
 		{
@@ -286,7 +299,17 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::VariableRemove(const TSharedPtr<FJson
 
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("name"), Name);
-	if (bForce) { Response->SetBoolField(TEXT("forced"), true); }
+	if (bDispatcher)
+	{
+		// Signal that this resolved to a dispatcher so callers know the signature
+		// graph was cleared too (the orphaned-warning fix), not just a NewVariables entry.
+		Response->SetBoolField(TEXT("dispatcher"), true);
+		Response->SetBoolField(TEXT("signature_graph_removed"), true);
+	}
+	else if (bForce)
+	{
+		Response->SetBoolField(TEXT("forced"), true);
+	}
 	return Response;
 }
 
@@ -1281,11 +1304,29 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::CdoSetProperty(const TSharedPtr<FJson
 	UBlueprint* Blueprint = FBlueprintEditHelpers::LoadBlueprintForEdit(Path, LoadError);
 	if (!Blueprint) { return FBlueprintEditHelpers::MakeEditError(LoadError); }
 
+	// Ensure the value lands on a fully-established CDO. If the blueprint isn't
+	// up-to-date (e.g. freshly reparented/gutted with pending structural changes),
+	// compile first — otherwise the caller's next structural save-and-compile runs
+	// CleanAndSanitizeClass, rebuilds the CDO from parent defaults, and drops a value
+	// applied to the pre-regen CDO. CL 16019's commit path can't help once the target
+	// CDO is replaced wholesale. A clean/up-to-date blueprint skips this, so the
+	// common (already-compiled) path is unchanged.
+	const bool bUpToDate =
+		Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings;
+	bool bCompiledFirst = false;
+	if (!bUpToDate)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		bCompiledFirst = true;
+	}
+
 	if (!Blueprint->GeneratedClass)
 	{
 		return FBlueprintEditHelpers::MakeEditError(TEXT("Blueprint has no GeneratedClass; compile it first"));
 	}
 
+	// Fetch the CDO AFTER the compile-first step — a structural compile regenerates
+	// the GeneratedClass and its CDO, so any pre-compile pointer would be stale.
 	UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject();
 	if (!CDO)
 	{
@@ -1299,19 +1340,92 @@ TSharedPtr<FJsonObject> FBlueprintEditOps::CdoSetProperty(const TSharedPtr<FJson
 	}
 
 	void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(CDO);
+
+	// Mirror the editor's property-commit path (FPropertyValueImpl::ImportText) rather
+	// than writing raw. A bare ImportText updates the in-memory CDO — enough for
+	// `cdo get` to read the value back — but skips the bookkeeping that makes it
+	// survive save + recompile to the runtime CDO: PreEditChange/PostEditChangeProperty
+	// and dirtying the CDO's own package. This is the same path gamedev's working
+	// manual fix (set to None, reassign, compile, save) takes; raw ImportText was the
+	// reason a TSubclassOf set read back correct yet loaded null at runtime.
+	CDO->SetFlags(RF_Transactional);
+	CDO->Modify();
+	CDO->PreEditChange(Prop);
+
 	// UE4.27: FProperty::ImportText(Buffer, Data, PortFlags, OwnerObject, ErrorText)
 	const TCHAR* ImportResult = Prop->ImportText(*Value, ValuePtr, PPF_None, CDO);
 	if (ImportResult == nullptr)
 	{
+		// PreEditChange must be paired with a PostEditChange even on the failure path
+		// so the CDO isn't left mid-edit.
+		FPropertyChangedEvent AbortEvent(Prop, EPropertyChangeType::ValueSet);
+		CDO->PostEditChangeProperty(AbortEvent);
 		return FBlueprintEditHelpers::MakeEditError(FString::Printf(TEXT("ImportText failed for value: %s"), *Value));
 	}
 
-	// Ensure the blueprint is re-marked so the next compile propagates the CDO change.
+	// Notify + dirty the CDO's package (propagates to instances, registers the change
+	// for serialization), then re-mark the blueprint so the next compile regenerates
+	// with the new default.
+	FPropertyChangedEvent ChangeEvent(Prop, EPropertyChangeType::ValueSet);
+	CDO->PostEditChangeProperty(ChangeEvent);
+	CDO->MarkPackageDirty();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	TSharedPtr<FJsonObject> Response = FBlueprintEditHelpers::MakeEditSuccess(Path);
 	Response->SetStringField(TEXT("property_name"), PropertyName);
 	Response->SetStringField(TEXT("value"), Value);
+	// Report whether a compile-first was needed so callers can see the value landed
+	// on a freshly-established CDO (the dirty-class persistence fix).
+	Response->SetBoolField(TEXT("compiled_first"), bCompiledFirst);
+
+	// Like every edit op, the set only mutates in-memory state by default — the
+	// value must be persisted with a save (and, for a CDO default to survive
+	// recompile-on-load, a compile) or it's lost on the next editor restart. Opt-in
+	// flags let callers persist in the same call; otherwise we flag the staged state
+	// explicitly so the persist step can't be silently forgotten.
+	bool bSaveAndCompile = false;
+	bool bSaveOnly = false;
+	Params->TryGetBoolField(TEXT("save_and_compile"), bSaveAndCompile);
+	Params->TryGetBoolField(TEXT("save"), bSaveOnly);
+
+	if (bSaveAndCompile || bSaveOnly)
+	{
+		// Reuse the existing lifecycle ops (they re-resolve the same in-memory
+		// blueprint, so the staged CDO change is intact).
+		TSharedPtr<FJsonObject> PersistResult =
+			bSaveAndCompile ? SaveAndCompile(Params) : Save(Params);
+
+		Response->SetBoolField(TEXT("staged"), false);
+
+		bool bPersistOk = true;
+		PersistResult->TryGetBoolField(TEXT("success"), bPersistOk);
+		bool bSaved = false;
+		PersistResult->TryGetBoolField(TEXT("saved"), bSaved);
+		Response->SetBoolField(TEXT("saved"), bSaved);
+
+		const TSharedPtr<FJsonObject>* CompileBlock = nullptr;
+		if (PersistResult->TryGetObjectField(TEXT("compile"), CompileBlock) && CompileBlock)
+		{
+			Response->SetObjectField(TEXT("compile"), *CompileBlock);
+		}
+
+		if (!bPersistOk)
+		{
+			// Property was set, but persistence failed (e.g. compile error). Surface it
+			// so callers don't believe the value reached disk.
+			FString PersistErr = TEXT("save/compile failed");
+			PersistResult->TryGetStringField(TEXT("error"), PersistErr);
+			Response->SetBoolField(TEXT("success"), false);
+			Response->SetStringField(TEXT("error"),
+				FString::Printf(TEXT("Property set on CDO but persist failed: %s"), *PersistErr));
+		}
+	}
+	else
+	{
+		Response->SetBoolField(TEXT("staged"), true);
+		Response->SetStringField(TEXT("persist_with"), TEXT("edit save-and-compile"));
+	}
+
 	return Response;
 }
 

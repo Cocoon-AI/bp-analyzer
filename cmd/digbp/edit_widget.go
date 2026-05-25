@@ -17,6 +17,52 @@ func editWidgetCmd() *cobra.Command {
 		Short: "Edit UMG widgets in a WidgetBlueprint's WidgetTree",
 	}
 	cmd.AddCommand(editWidgetSetPropertyCmd())
+	cmd.AddCommand(editWidgetRenameCmd())
+	return cmd
+}
+
+func editWidgetRenameCmd() *cobra.Command {
+	var path, oldName, newName string
+	cmd := &cobra.Command{
+		Use:   "rename",
+		Short: "Rename a UMG widget and retarget every internal reference",
+		Long: `Renames a named UMG widget inside a WidgetBlueprint's WidgetTree and
+retargets all internal references in one shot — a headless port of the UMG
+editor's own rename. Retargets:
+  - the widget's FName + its auto-generated UWidget* member variable
+  - K2Node_VariableGet/Set nodes that read the widget (Get/Set <WidgetName>)
+  - K2Node_ComponentBoundEvent bindings tied to the widget's delegates
+  - property/event delegate bindings, widget-animation bindings, navigation bindings
+
+The new name is treated as a display name and sanitized into an FName the same
+way the editor does (spaces/illegal characters stripped); the resolved FName is
+returned as new_name.
+
+BindWidget: when the parent class already declares a meta=(BindWidget) UWidget*
+property of the new name (with a compatible widget class), the usual name-
+collision check is bypassed. This is the rename-to-match-a-C++-BindWidget case
+for reparenting BP widgets onto a C++ base.
+
+Examples:
+  digbp edit widget rename --path=/Game/Showdown/UI/Elements/SD_EmoteSelectMenu --old-name=EmoteCardHolder --new-name=CardHolder
+
+Workflow note: p4 edit the .uasset before mutation. The rename marks the
+Blueprint structurally modified; follow with 'edit save' (or save-and-compile)
+to persist.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return callServer("edit.widget.rename", map[string]interface{}{
+				"path":     path,
+				"old_name": oldName,
+				"new_name": newName,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "WidgetBlueprint asset path (required)")
+	cmd.Flags().StringVar(&oldName, "old-name", "", "Current widget Name (FName) in the WidgetTree (required)")
+	cmd.Flags().StringVar(&newName, "new-name", "", "New widget name (required; sanitized to an FName like the editor)")
+	_ = cmd.MarkFlagRequired("path")
+	_ = cmd.MarkFlagRequired("old-name")
+	_ = cmd.MarkFlagRequired("new-name")
 	return cmd
 }
 

@@ -252,6 +252,13 @@ digbp edit cdo set --path=/Game/BP_Foo --property=bCanBeDamaged --value=true
 
 # Struct values use UE's native text form:
 digbp edit cdo set --path=/Game/BP_Foo --property=RelativeLocation --value="(X=0,Y=0,Z=100)"
+
+# cdo set STAGES the change in memory (response: staged:true, persist_with). It is
+# NOT on disk until you persist — either a separate 'edit save-and-compile', or in
+# one call with --save-and-compile (recommended for CDO defaults; --save skips the
+# recompile). A staged-but-unsaved set reads back via 'cdo get' (live CDO) yet loads
+# null after an editor restart — persist it.
+digbp edit cdo set --path=/Game/BP_Foo --property=CardClass --value="...SD_Card_C" --save-and-compile
 ```
 
 ### Functions
@@ -374,7 +381,25 @@ digbp edit widget set-property --path=/Game/UI/SP_Matchmaker --widget=StatusText
 # Color (FLinearColor or FSlateColor in UE text)
 digbp edit widget set-property --path=/Game/UI/SP_Matchmaker --widget=StatusText \
     --property=ColorAndOpacity --value="(R=1.0,G=0.8,B=0.4,A=1.0)"
+
+# Rename a widget and retarget every internal reference in one shot
+digbp edit widget rename --path=/Game/UI/SD_EmoteSelectMenu \
+    --old-name=EmoteCardHolder --new-name=CardHolder
 ```
+
+`widget rename` is a headless port of the UMG editor's own rename. It retargets
+the widget's FName + its auto-generated `UWidget*` member variable, every
+`K2Node_VariableGet/Set` that reads the widget, `K2Node_ComponentBoundEvent`
+bindings tied to the widget's delegates, and property/animation/navigation
+bindings. `--new-name` is sanitized into an FName the same way the editor does
+(the resolved FName comes back as `new_name`).
+
+Use it to make WidgetTree names match a C++ base's `meta=(BindWidget)` members
+before reparenting BP widgets onto that base — one C++ base with a single
+`BindWidget CardHolder` instead of per-BP names like `EmoteCardHolder`. When the
+parent class already declares a `meta=(BindWidget)` property of the new name (of
+a compatible widget class), the name-collision check is bypassed so the rename
+onto that exact name succeeds.
 
 Workflow: p4 edit the .uasset, mutate, then `edit save-and-compile`. The
 WidgetTree mutation is on the design-time archetype, so it persists across

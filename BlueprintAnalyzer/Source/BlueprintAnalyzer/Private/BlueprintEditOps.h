@@ -83,6 +83,7 @@ public:
 
 	// BlueprintEditOps_Widgets.cpp (UMG WidgetTree edits — distinct from SCS components)
 	static TSharedPtr<FJsonObject> WidgetSetProperty(const TSharedPtr<FJsonObject>& Params);
+	static TSharedPtr<FJsonObject> WidgetRename(const TSharedPtr<FJsonObject>& Params);
 
 	// --- Phase D: node graph editing ---
 
