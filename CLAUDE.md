@@ -180,6 +180,19 @@ digbp datatable rewrite-paths --path=/Game/Data/ItemCatalog \
     --from=/Game/Showdown/NFT/ --to=/Game/Showdown/Characters/   # bulk soft-ref rewrite
 digbp datatable save --path=/Game/Data/ItemCatalog
 
+# UFont composite-font inspection/mutation (l10n fallback wiring). Reaches the
+# protected UFont::CompositeFont via native reflection (editor Python refuses it).
+# Runtime-cached fonts only; mutations stage in memory — persist with `font save`
+# (fonts aren't BPs, `edit save` doesn't apply).
+digbp font export --path=/Game/Showdown/UI/Fonts/DisplayFont
+digbp font add-subfont --path=/Game/Showdown/UI/Fonts/RobotoSlab \
+    --font-face=/Game/Showdown/UI/Fonts/NotoSansCJKjp-Regular \
+    --cultures=ja --range=3000-30FF,4E00-9FFF,FF00-FFEF        # ranges: unicode-hex, inclusive, REQUIRED
+digbp font set-fallback --path=/Game/Showdown/UI/Fonts/RobotoSlab \
+    --font-face=/Game/Showdown/UI/Fonts/NotoSansCJKjp-Regular   # catch-all tier (range-less)
+digbp font remove-subfont --path=/Game/Showdown/UI/Fonts/RobotoSlab --index=0
+digbp font save --path=/Game/Showdown/UI/Fonts/RobotoSlab
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```
@@ -469,6 +482,7 @@ Module type is `Editor` (requires editor, loads at Default phase).
 - An event dispatcher is TWO coupled objects: a multicast-delegate entry in `NewVariables` AND a signature graph (same name) in `DelegateSignatureGraphs`. Removing only one orphans the other — a surviving signature graph trips KismetCompiler's "No delegate property found for X" warning every compile. Always tear down both via `FBlueprintEditHelpers::RemoveEventDispatcher` (RemoveMemberVariable + RemoveGraph + revalidate CreateDelegate nodes), the path shared by `variable remove` (dispatcher-typed) and `dispatcher remove`. `RemoveGraph` does NOT remove the property and `RemoveMemberVariable` does NOT remove the graph.
 - Setting a property on a CDO (or any archetype/default object) programmatically must mirror the editor's commit path, NOT a raw `FProperty::ImportText`. The full sequence (per `FPropertyValueImpl::ImportText`) is `CDO->SetFlags(RF_Transactional); CDO->Modify(); CDO->PreEditChange(Prop);` → ImportText → `CDO->PostEditChangeProperty(FPropertyChangedEvent(Prop, EPropertyChangeType::ValueSet)); CDO->MarkPackageDirty();` then `MarkBlueprintAsModified` (CL 16019; raw ImportText + MarkBlueprintAsModified alone is insufficient). If the blueprint isn't up-to-date, compile FIRST so the value lands on an established CDO that a later structural recompile won't regenerate away (CL 16022).
 - CDO-write persistence is a two-step contract, and `cdo get` masks step 2: the set only mutates the in-memory CDO (so `cdo get`, reading that same live CDO, always shows the new value), but it is NOT on disk until an `edit save`. For a CDO default to survive recompile-on-load you generally want `save-and-compile`; the on-disk CDO is then carried into the regenerated CDO by the reinstancer's `CopyPropertiesForUnrelatedObjects` (KismetReinstanceUtilities.cpp). A staged-but-unsaved set reads back correct yet loads null after restart — the #1 false-positive when debugging "I set it but runtime is null." `cdo set` flags this in its response (`staged:true`, `persist_with`) and takes opt-in `--save` / `--save-and-compile` (CL 16025); staging stays the default, consistent with all edit ops.
+- `UFont::CompositeFont` is a protected UPROPERTY — editor Python get/set_editor_property refuses it. Native reflection (`FindFProperty` on `UFont::StaticClass()` + `ContainerPtrToValuePtr<FCompositeFont>`) gets past the access specifier; the struct type is public so mutate it directly (no ImportText round-trip). Slate only consults sub-typefaces through their CharacterRanges table, so a sub-font with no ranges NEVER matches — `font add-subfont` requires ranges; the catch-all tier is `FallbackTypeface` (`font set-fallback`). Typeface-entry names match loosely (requested "Black" with only a "Regular" entry falls back to best/first entry), so single-entry sub-fonts serve all styles. Cultures is semicolon-separated in-engine; digbp normalizes commas. Composite fonts only apply when `FontCacheType == Runtime`.
 - A `cdo set` on a WidgetBlueprint changes only that widget's CDO default — it does NOT reach instances of the widget EMBEDDED in other WidgetBlueprints' trees. An embedded child widget is a serialized instance in the parent's WidgetTree and can carry a baked per-instance override (e.g. a stale `None`) that wins over the corrected child CDO at runtime. Symptom: child CDO is correct (cdo get + saved) yet the parent's embedded instance still shows the old value in PIE. Fix each embedder with `edit widget set-property --path=<ParentBP> --widget=<EmbeddedChildName> --property=... ` + save-and-compile the parent (gamedev hit this with SD_OutfitSelectorMenu embedded in SD_Outfitter; CL 16027). Same instance-overrides-archetype rule as actor component instances.
 
 ### Testing

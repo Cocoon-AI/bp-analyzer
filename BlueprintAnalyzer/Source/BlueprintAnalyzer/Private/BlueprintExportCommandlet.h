@@ -178,6 +178,33 @@ public:
 	// → /Game/Showdown/Characters/.../). Returns { rewritten_count, changes }.
 	TSharedPtr<FJsonObject> DataTableRewritePathsToJson(const FString& Path, const FString& From, const FString& To);
 
+	// --- UFont composite-font operations (BlueprintExportFont.cpp) ---
+	// Inspect/mutate the protected UFont::CompositeFont UPROPERTY (reached via
+	// reflection; editor Python refuses it). Built for l10n fallback wiring:
+	// append culture/range-filtered sub-typefaces and set the last-resort
+	// fallback typeface so CJK/Cyrillic renders in project FontFace assets
+	// instead of engine DroidSansFallback. Mutations follow the editor commit
+	// path (Modify/PreEditChange/PostEditChangeProperty) and mark the package
+	// dirty; persist with FontSaveToJson (generic asset save — not a BP).
+
+	// { font_cache_type, composite_font: { default_typeface, fallback, sub_typefaces } }
+	TSharedPtr<FJsonObject> FontExportToJson(const FString& Path);
+
+	// Append an FCompositeSubFont. Ranges is comma-separated unicode-hex
+	// ("4E00-9FFF,3040-30FF"), required — a sub-font with no ranges never
+	// matches. Cultures is optional comma/semicolon-separated filter.
+	TSharedPtr<FJsonObject> FontAddSubfontToJson(const FString& Path, const FString& FontFacePath, const FString& Cultures, const FString& Ranges, const FString& TypefaceName, const FString& EditorName, double ScalingFactor);
+
+	// Replace FallbackTypeface with a single entry pointing at the FontFace.
+	TSharedPtr<FJsonObject> FontSetFallbackToJson(const FString& Path, const FString& FontFacePath, const FString& TypefaceName, double ScalingFactor);
+
+	// Remove a sub-typeface by index (indices as reported by FontExportToJson).
+	TSharedPtr<FJsonObject> FontRemoveSubfontToJson(const FString& Path, int32 Index);
+
+	// Persist the font's package to disk (if dirty). Same semantics as
+	// datatable.save — bOnlyDirty=true.
+	TSharedPtr<FJsonObject> FontSaveToJson(const FString& Path);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

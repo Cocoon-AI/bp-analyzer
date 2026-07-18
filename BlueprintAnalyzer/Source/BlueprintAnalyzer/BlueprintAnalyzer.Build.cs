@@ -15,7 +15,9 @@ public class BlueprintAnalyzer : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"Json",
-			"JsonUtilities"
+			"JsonUtilities",
+			// FCompositeFont / FTypeface / FFontData for UFont composite-font ops.
+			"SlateCore"
 		});
 
 		if (Target.Type == TargetType.Editor)

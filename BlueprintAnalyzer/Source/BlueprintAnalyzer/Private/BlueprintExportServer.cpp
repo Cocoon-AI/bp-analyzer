@@ -775,6 +775,86 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Commandlet->DataTableRewritePathsToJson(Path, From, To));
 	}
 
+	// --- UFont composite-font operations ---
+
+	if (Method == TEXT("font.export"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		return MakeResponse(Id, Commandlet->FontExportToJson(Path));
+	}
+
+	if (Method == TEXT("font.add_subfont"))
+	{
+		FString Path, FontFace, Ranges;
+		FString Cultures, EditorName;
+		FString Name = TEXT("Regular");
+		double ScalingFactor = 1.0;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetStringField(TEXT("font_face"), FontFace) || FontFace.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: font_face"));
+		}
+		if (!Params->TryGetStringField(TEXT("ranges"), Ranges) || Ranges.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: ranges (comma-separated unicode-hex, e.g. 4E00-9FFF)"));
+		}
+		Params->TryGetStringField(TEXT("cultures"), Cultures);
+		Params->TryGetStringField(TEXT("name"), Name);
+		Params->TryGetStringField(TEXT("editor_name"), EditorName);
+		Params->TryGetNumberField(TEXT("scaling_factor"), ScalingFactor);
+		return MakeResponse(Id, Commandlet->FontAddSubfontToJson(Path, FontFace, Cultures, Ranges, Name, EditorName, ScalingFactor));
+	}
+
+	if (Method == TEXT("font.set_fallback"))
+	{
+		FString Path, FontFace;
+		FString Name = TEXT("Regular");
+		double ScalingFactor = 1.0;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetStringField(TEXT("font_face"), FontFace) || FontFace.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: font_face"));
+		}
+		Params->TryGetStringField(TEXT("name"), Name);
+		Params->TryGetNumberField(TEXT("scaling_factor"), ScalingFactor);
+		return MakeResponse(Id, Commandlet->FontSetFallbackToJson(Path, FontFace, Name, ScalingFactor));
+	}
+
+	if (Method == TEXT("font.remove_subfont"))
+	{
+		FString Path;
+		int32 Index = -1;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetNumberField(TEXT("index"), Index) || Index < 0)
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: index (>= 0, from font.export)"));
+		}
+		return MakeResponse(Id, Commandlet->FontRemoveSubfontToJson(Path, Index));
+	}
+
+	if (Method == TEXT("font.save"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		return MakeResponse(Id, Commandlet->FontSaveToJson(Path));
+	}
+
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));
 }
 

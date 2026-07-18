@@ -66,6 +66,7 @@ func main() {
 		widgetTreeCmd(),
 		cppGenCmd(),
 		datatableCmd(),
+		fontCmd(),
 		editCmd(),
 		versionCmd(),
 	)
