@@ -193,7 +193,9 @@ public:
 	// Append an FCompositeSubFont. Ranges is comma-separated unicode-hex
 	// ("4E00-9FFF,3040-30FF"), required — a sub-font with no ranges never
 	// matches. Cultures is optional comma/semicolon-separated filter.
-	TSharedPtr<FJsonObject> FontAddSubfontToJson(const FString& Path, const FString& FontFacePath, const FString& Cultures, const FString& Ranges, const FString& TypefaceName, const FString& EditorName, double ScalingFactor);
+	// BeforeIndex inserts ahead of an existing sub-font (first-match-wins
+	// ordering); -1 appends.
+	TSharedPtr<FJsonObject> FontAddSubfontToJson(const FString& Path, const FString& FontFacePath, const FString& Cultures, const FString& Ranges, const FString& TypefaceName, const FString& EditorName, double ScalingFactor, int32 BeforeIndex);
 
 	// Replace FallbackTypeface with a single entry pointing at the FontFace.
 	TSharedPtr<FJsonObject> FontSetFallbackToJson(const FString& Path, const FString& FontFacePath, const FString& TypefaceName, double ScalingFactor);

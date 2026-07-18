@@ -188,6 +188,7 @@ digbp font export --path=/Game/Showdown/UI/Fonts/DisplayFont
 digbp font add-subfont --path=/Game/Showdown/UI/Fonts/RobotoSlab \
     --font-face=/Game/Showdown/UI/Fonts/NotoSansCJKjp-Regular \
     --cultures=ja --range=3000-30FF,4E00-9FFF,FF00-FFEF        # ranges: unicode-hex, inclusive, REQUIRED
+    # optional: --before=N inserts ahead of sub-font N (first match wins); default appends
 digbp font set-fallback --path=/Game/Showdown/UI/Fonts/RobotoSlab \
     --font-face=/Game/Showdown/UI/Fonts/NotoSansCJKjp-Regular   # catch-all tier (range-less)
 digbp font remove-subfont --path=/Game/Showdown/UI/Fonts/RobotoSlab --index=0

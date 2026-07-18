@@ -809,7 +809,9 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		Params->TryGetStringField(TEXT("name"), Name);
 		Params->TryGetStringField(TEXT("editor_name"), EditorName);
 		Params->TryGetNumberField(TEXT("scaling_factor"), ScalingFactor);
-		return MakeResponse(Id, Commandlet->FontAddSubfontToJson(Path, FontFace, Cultures, Ranges, Name, EditorName, ScalingFactor));
+		int32 BeforeIndex = -1;
+		Params->TryGetNumberField(TEXT("before"), BeforeIndex);
+		return MakeResponse(Id, Commandlet->FontAddSubfontToJson(Path, FontFace, Cultures, Ranges, Name, EditorName, ScalingFactor, BeforeIndex));
 	}
 
 	if (Method == TEXT("font.set_fallback"))

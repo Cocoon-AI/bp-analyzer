@@ -67,6 +67,7 @@ func fontAddSubfontCmd() *cobra.Command {
 		name          string
 		editorName    string
 		scalingFactor float64
+		before        int
 	)
 	cmd := &cobra.Command{
 		Use:   "add-subfont",
@@ -84,9 +85,9 @@ Katakana 30A0-30FF, Hangul AC00-D7AF (+Jamo 1100-11FF), CJK punctuation
 
 --cultures is an optional filter (e.g. --cultures=zh-Hans,zh-Hant); empty
 means the sub-font applies in every culture. Sub-fonts are matched in array
-order — first match wins — and this command appends, so ordering conflicts
-only arise if ranges overlap an existing sub-font ('font export' shows the
-current order).
+order — first match wins. By default this command appends; when ranges
+overlap an existing sub-font, use --before=N to insert ahead of it (indices
+from 'font export').
 
 Stages in memory; follow with 'font save'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -105,6 +106,9 @@ Stages in memory; follow with 'font save'.`,
 				params["editor_name"] = editorName
 			}
 			params["scaling_factor"] = scalingFactor
+			if before >= 0 {
+				params["before"] = before
+			}
 			return callServer("font.add_subfont", params)
 		},
 	}
@@ -115,6 +119,7 @@ Stages in memory; follow with 'font save'.`,
 	cmd.Flags().StringVar(&name, "name", "Regular", "Typeface entry name")
 	cmd.Flags().StringVar(&editorName, "editor-name", "", "Editor-UI display name for the sub-font (default: FontFace asset name)")
 	cmd.Flags().Float64Var(&scalingFactor, "scaling-factor", 1.0, "Scale of this sub-font relative to the base font")
+	cmd.Flags().IntVar(&before, "before", -1, "Insert ahead of this sub-typeface index instead of appending (first match wins)")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("font-face")
 	_ = cmd.MarkFlagRequired("range")

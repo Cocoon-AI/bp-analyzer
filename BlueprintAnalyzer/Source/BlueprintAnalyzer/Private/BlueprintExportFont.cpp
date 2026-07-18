@@ -344,7 +344,7 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FontExportToJson(const FStri
 // font.add_subfont — append a culture/range-filtered sub-typeface
 //------------------------------------------------------------------------------
 
-TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FontAddSubfontToJson(const FString& Path, const FString& FontFacePath, const FString& Cultures, const FString& Ranges, const FString& TypefaceName, const FString& EditorName, double ScalingFactor)
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FontAddSubfontToJson(const FString& Path, const FString& FontFacePath, const FString& Cultures, const FString& Ranges, const FString& TypefaceName, const FString& EditorName, double ScalingFactor, int32 BeforeIndex)
 {
 	TSharedPtr<FJsonObject> Err;
 	UFont* Font = Font_Load(Path, Err);
@@ -371,6 +371,13 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FontAddSubfontToJson(const F
 		return Font_MakeError(ParseError);
 	}
 
+	// Sub-fonts match first-wins in array order; BeforeIndex allows inserting
+	// ahead of an existing sub-font instead of appending. -1 = append.
+	if (BeforeIndex > Composite->SubTypefaces.Num())
+	{
+		return Font_MakeError(FString::Printf(TEXT("before index %d out of range (font has %d sub-typefaces; %d appends)"), BeforeIndex, Composite->SubTypefaces.Num(), Composite->SubTypefaces.Num()));
+	}
+
 	FStructProperty* Prop = Font_CompositeFontProperty();
 	Font_PreChange(Font, Prop);
 
@@ -383,7 +390,9 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::FontAddSubfontToJson(const F
 #endif
 	NewSub.Typeface.Fonts.Add(Font_MakeTypefaceEntry(TypefaceName, Face));
 
-	const int32 NewIndex = Composite->SubTypefaces.Add(MoveTemp(NewSub));
+	const int32 NewIndex = (BeforeIndex >= 0 && BeforeIndex < Composite->SubTypefaces.Num())
+		? Composite->SubTypefaces.Insert(MoveTemp(NewSub), BeforeIndex)
+		: Composite->SubTypefaces.Add(MoveTemp(NewSub));
 
 	Font_PostChange(Font, Prop);
 
