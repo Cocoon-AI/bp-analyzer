@@ -857,6 +857,18 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Commandlet->FontSaveToJson(Path));
 	}
 
+	// --- Animation asset export ---
+
+	if (Method == TEXT("anim.export"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		return MakeResponse(Id, Commandlet->AnimExportToJson(Path));
+	}
+
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));
 }
 

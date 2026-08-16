@@ -12,6 +12,7 @@
 #include "Misc/FileHelper.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
+#include "Animation/AnimationAsset.h"
 
 // Markers for JSON output parsing
 #define JSON_START_MARKER TEXT("__JSON_START__")
@@ -551,7 +552,18 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::ExportBlueprintToJson(const 
 	{
 		TSharedPtr<FJsonObject> Error = MakeShareable(new FJsonObject);
 		Error->SetBoolField(TEXT("success"), false);
-		Error->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
+		// Pointing export at a non-Blueprint asset is the common miss here —
+		// name the actual class and route animation assets to anim.export.
+		FString Message = FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath);
+		if (UObject* Asset = LoadObject<UObject>(nullptr, *BlueprintPath))
+		{
+			Message = FString::Printf(TEXT("Asset is not a Blueprint (class %s): %s"), *Asset->GetClass()->GetName(), *BlueprintPath);
+			if (Asset->IsA<UAnimationAsset>())
+			{
+				Message += TEXT(". Animation assets are exported with 'digbp anim export'");
+			}
+		}
+		Error->SetStringField(TEXT("error"), Message);
 		return Error;
 	}
 

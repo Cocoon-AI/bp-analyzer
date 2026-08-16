@@ -207,6 +207,12 @@ public:
 	// datatable.save — bOnlyDirty=true.
 	TSharedPtr<FJsonObject> FontSaveToJson(const FString& Path);
 
+	// --- Animation asset export (BlueprintExportAnim.cpp) ---
+	// Read-only JSON export dispatching on asset class: BlendSpace family
+	// (axes, interpolation, samples), UAnimSequence (length/frames/additive/
+	// sync markers/notifies/curves), UAnimMontage (blend, slots, sections).
+	TSharedPtr<FJsonObject> AnimExportToJson(const FString& Path);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

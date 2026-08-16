@@ -67,6 +67,7 @@ func main() {
 		cppGenCmd(),
 		datatableCmd(),
 		fontCmd(),
+		animCmd(),
 		editCmd(),
 		versionCmd(),
 	)

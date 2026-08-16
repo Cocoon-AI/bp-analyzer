@@ -194,6 +194,15 @@ digbp font set-fallback --path=/Game/Showdown/UI/Fonts/RobotoSlab \
 digbp font remove-subfont --path=/Game/Showdown/UI/Fonts/RobotoSlab --index=0
 digbp font save --path=/Game/Showdown/UI/Fonts/RobotoSlab
 
+# Animation asset export (read-only; 'digbp export' only speaks UBlueprint).
+# Dispatches on class: BlendSpace/BlendSpace1D/AimOffsetBlendSpace(1D) →
+# blend_space (axes, per-axis input interpolation, samples with coordinates +
+# rate_scale, axis_to_scale_animation, preview_base_pose); AnimSequence →
+# anim_sequence (length, frames, additive settings, sync markers, notifies,
+# curves); AnimMontage → anim_montage (blend in/out, slots/segments, sections).
+digbp anim export --path=/Game/Showdown/Characters/Animation/Cowboy/BlendSpaces/AimBS_Cowboy_Rider_Rifle
+digbp anim export --path=/Game/Showdown/Characters/Animation/Cowboy/Montages/AM_Cowboy_Reload --pretty
+
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
 ```
@@ -379,6 +388,7 @@ bp-analyzer/
 │           ├── BlueprintExportReader.cpp # Core read/search implementation
 │           ├── BlueprintExportCommandlet.cpp # CLI + output formatting
 │           ├── BlueprintExportCommandlet.h
+│           ├── BlueprintExportAnim.cpp   # Anim asset export (BlendSpace/Sequence/Montage)
 │           ├── BlueprintExportServer.cpp # Named pipe server + JSON-RPC dispatch
 │           ├── BlueprintExportServer.h
 │           ├── BlueprintExportServerEditDispatch.cpp # Edit method routing
