@@ -34,9 +34,10 @@ with 'anim save'. SCC (p4 edit / git) is the caller's job.`,
 
 func animImportCmd() *cobra.Command {
 	var (
-		fbx      string
-		skeleton string
-		dest     string
+		fbx           string
+		skeleton      string
+		dest          string
+		preserveLocal bool
 	)
 	cmd := &cobra.Command{
 		Use:   "import",
@@ -47,15 +48,29 @@ UAnimSequence at --dest, binding it to --skeleton. Imports animation only
 
 Unlike other anim mutations this SAVES the asset immediately — batch loops
 don't stage hundreds of imports in server memory. Overwrite of an existing
-asset is in-place (reimport semantics). SCC checkout is the caller's job.`,
+asset is in-place (reimport semantics). SCC checkout is the caller's job.
+
+--preserve-local-transform imports the authored FBX local transforms
+directly instead of UE's default local-from-global reconstruction. Use it
+when the default path corrupts specific bones (observed signature: one
+bone wrong by some angle, every direct child inheriting exactly that
+angle, grandchildren unaffected). Note the root bone's transform then also
+comes straight from the FBX — any axis-conversion behavior baked into the
+default path's root reconstruction (e.g. a +90deg X) may change, so
+re-baseline root handling when flipping this on.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return callServer("anim.import", map[string]interface{}{
+			params := map[string]interface{}{
 				"fbx":      fbx,
 				"skeleton": skeleton,
 				"dest":     dest,
-			})
+			}
+			if preserveLocal {
+				params["preserve_local"] = true
+			}
+			return callServer("anim.import", params)
 		},
 	}
+	cmd.Flags().BoolVar(&preserveLocal, "preserve-local-transform", false, "Import authored FBX locals directly (skip local-from-global reconstruction)")
 	cmd.Flags().StringVar(&fbx, "fbx", "", "Absolute path to the FBX file (required)")
 	cmd.Flags().StringVar(&skeleton, "skeleton", "", "Skeleton asset path (required, e.g. /Game/Showdown/Characters/Animation/SKEL_Gunslinger)")
 	cmd.Flags().StringVar(&dest, "dest", "", "Destination asset path incl. name (required, e.g. /Game/Showdown/Characters/Animation/Cowboy/Mounted/AS_Pose_01)")

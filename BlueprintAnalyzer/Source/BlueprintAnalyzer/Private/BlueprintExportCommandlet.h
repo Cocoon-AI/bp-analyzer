@@ -221,7 +221,10 @@ public:
 	// Blueprint edit save path does not apply). Blend space mutations end
 	// with a full grid resample (vendored Persona triangulation) so the
 	// asset blends at runtime without ever being opened in the editor.
-	TSharedPtr<FJsonObject> AnimImportFbxToJson(const FString& FbxPath, const FString& SkeletonPath, const FString& DestPath);
+	// bPreserveLocalTransform: import authored FBX locals directly instead of
+	// reconstructing local-from-global (workaround for per-bone reconstruction
+	// corruption on some rigs/poses).
+	TSharedPtr<FJsonObject> AnimImportFbxToJson(const FString& FbxPath, const FString& SkeletonPath, const FString& DestPath, bool bPreserveLocalTransform = false);
 	TSharedPtr<FJsonObject> AnimSetAdditiveToJson(const FString& Path, const FString& TypeStr, const FString& BasePosePath, const FString& BasePoseTypeStr, int32 RefFrame);
 	TSharedPtr<FJsonObject> AnimBlendSpaceCreateToJson(const FString& DestPath, const FString& ClassName, const FString& SkeletonPath);
 	TSharedPtr<FJsonObject> AnimBlendSpaceSetAxisToJson(const FString& Path, int32 AxisIndex, const FString& AxisName, bool bHasMin, double Min, bool bHasMax, double Max, bool bHasGridNum, int32 GridNum);

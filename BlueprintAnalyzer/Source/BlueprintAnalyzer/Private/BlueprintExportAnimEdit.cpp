@@ -231,7 +231,7 @@ namespace
 // anim.import — automated FBX → UAnimSequence on a skeleton (saves on import)
 //------------------------------------------------------------------------------
 
-TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimImportFbxToJson(const FString& FbxPath, const FString& SkeletonPath, const FString& DestPath)
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimImportFbxToJson(const FString& FbxPath, const FString& SkeletonPath, const FString& DestPath, bool bPreserveLocalTransform)
 {
 	if (FbxPath.IsEmpty() || !FPaths::FileExists(FbxPath))
 	{
@@ -264,6 +264,15 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimImportFbxToJson(const FS
 	ImportUI->bCreatePhysicsAsset = false;
 	ImportUI->AnimSequenceImportData->AnimationLength = FBXALIT_ExportedTime;
 	ImportUI->AnimSequenceImportData->bImportBoneTracks = true;
+	// Default path (false) RECONSTRUCTS each bone's local transform by
+	// dividing its FBX global through the parent's FBX global
+	// (SkeletalMeshEdit.cpp ImportBoneTracks, GetRelativeTransform branch).
+	// On some rigs/poses that division is inconsistent for a single bone
+	// (observed: wrist chain, error θ injected at one bone and conjugated
+	// into every direct child as pure local-X, grandchildren cancel).
+	// true switches to the engine's EvaluateLocalTransform branch — the
+	// authored local values, no reconstruction at all.
+	ImportUI->AnimSequenceImportData->bPreserveLocalTransform = bPreserveLocalTransform;
 
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = FbxPath;

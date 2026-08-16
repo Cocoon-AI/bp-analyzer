@@ -888,7 +888,9 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		{
 			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dest (/Game/Path/AssetName)"));
 		}
-		return MakeResponse(Id, Commandlet->AnimImportFbxToJson(Fbx, Skeleton, Dest));
+		bool bPreserveLocal = false;
+		Params->TryGetBoolField(TEXT("preserve_local"), bPreserveLocal);
+		return MakeResponse(Id, Commandlet->AnimImportFbxToJson(Fbx, Skeleton, Dest, bPreserveLocal));
 	}
 
 	if (Method == TEXT("anim.set_additive"))
