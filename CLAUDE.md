@@ -411,7 +411,7 @@ bp-analyzer/
 │           ├── BlueprintExportCommandlet.h
 │           ├── BlueprintExportAnim.cpp   # Anim asset export (BlendSpace/Sequence/Montage)
 │           ├── BlueprintExportAnimEdit.cpp # Anim mutation (FBX import, additive, blendspace)
-│           ├── AnimationBlendSpace*Helpers.* # Vendored Persona grid triangulation (DigBSGrid)
+│           ├── AnimationBlendSpace*Helpers.* # Vendored Persona grid triangulation (DigBSGrid) — Epic-copyrighted, gitignored, regenerate with scripts/vendor_epic_sources.py
 │           ├── BlueprintExportServer.cpp # Named pipe server + JSON-RPC dispatch
 │           ├── BlueprintExportServer.h
 │           ├── BlueprintExportServerEditDispatch.cpp # Edit method routing

@@ -1,2 +1,5 @@
 justfile
 digbp.exe
+# Epic-copyrighted engine source, vendored locally by scripts/vendor_epic_sources.py — never commit
+BlueprintAnalyzer/Source/BlueprintAnalyzer/Private/AnimationBlendSpaceHelpers.*
+BlueprintAnalyzer/Source/BlueprintAnalyzer/Private/AnimationBlendSpace1DHelpers.*
