@@ -873,6 +873,126 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Commandlet->AnimExportToJson(Path, bTracks, TracksFrame));
 	}
 
+	if (Method == TEXT("anim.import"))
+	{
+		FString Fbx, Skeleton, Dest;
+		if (!Params->TryGetStringField(TEXT("fbx"), Fbx) || Fbx.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: fbx (absolute file path)"));
+		}
+		if (!Params->TryGetStringField(TEXT("skeleton"), Skeleton) || Skeleton.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: skeleton"));
+		}
+		if (!Params->TryGetStringField(TEXT("dest"), Dest) || Dest.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dest (/Game/Path/AssetName)"));
+		}
+		return MakeResponse(Id, Commandlet->AnimImportFbxToJson(Fbx, Skeleton, Dest));
+	}
+
+	if (Method == TEXT("anim.set_additive"))
+	{
+		FString Path, Type, BasePose, BasePoseType;
+		int32 RefFrame = -1;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetStringField(TEXT("type"), Type) || Type.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: type (None | LocalSpaceBase | RotationOffsetMeshSpace)"));
+		}
+		Params->TryGetStringField(TEXT("base_pose"), BasePose);
+		Params->TryGetStringField(TEXT("base_pose_type"), BasePoseType);
+		Params->TryGetNumberField(TEXT("ref_frame"), RefFrame);
+		return MakeResponse(Id, Commandlet->AnimSetAdditiveToJson(Path, Type, BasePose, BasePoseType, RefFrame));
+	}
+
+	if (Method == TEXT("anim.blendspace_create"))
+	{
+		FString Dest, ClassName, Skeleton;
+		if (!Params->TryGetStringField(TEXT("dest"), Dest) || Dest.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dest (/Game/Path/AssetName)"));
+		}
+		if (!Params->TryGetStringField(TEXT("class"), ClassName) || ClassName.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: class (BlendSpace | BlendSpace1D | AimOffsetBlendSpace | AimOffsetBlendSpace1D)"));
+		}
+		if (!Params->TryGetStringField(TEXT("skeleton"), Skeleton) || Skeleton.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: skeleton"));
+		}
+		return MakeResponse(Id, Commandlet->AnimBlendSpaceCreateToJson(Dest, ClassName, Skeleton));
+	}
+
+	if (Method == TEXT("anim.blendspace_set_axis"))
+	{
+		FString Path, Name;
+		int32 Axis = -1;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetNumberField(TEXT("axis"), Axis) || Axis < 0)
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: axis (0 or 1)"));
+		}
+		Params->TryGetStringField(TEXT("name"), Name);
+		double Min = 0.0, Max = 0.0;
+		const bool bHasMin = Params->TryGetNumberField(TEXT("min"), Min);
+		const bool bHasMax = Params->TryGetNumberField(TEXT("max"), Max);
+		int32 GridNum = 0;
+		const bool bHasGridNum = Params->TryGetNumberField(TEXT("grid_num"), GridNum);
+		return MakeResponse(Id, Commandlet->AnimBlendSpaceSetAxisToJson(Path, Axis, Name, bHasMin, Min, bHasMax, Max, bHasGridNum, GridNum));
+	}
+
+	if (Method == TEXT("anim.blendspace_add_sample"))
+	{
+		FString Path, Animation;
+		double X = 0.0, Y = 0.0;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetStringField(TEXT("animation"), Animation) || Animation.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: animation"));
+		}
+		if (!Params->TryGetNumberField(TEXT("x"), X))
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: x"));
+		}
+		Params->TryGetNumberField(TEXT("y"), Y);
+		return MakeResponse(Id, Commandlet->AnimBlendSpaceAddSampleToJson(Path, Animation, X, Y));
+	}
+
+	if (Method == TEXT("anim.blendspace_remove_sample"))
+	{
+		FString Path;
+		int32 Index = -1;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		if (!Params->TryGetNumberField(TEXT("index"), Index) || Index < 0)
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: index (>= 0, from anim.export)"));
+		}
+		return MakeResponse(Id, Commandlet->AnimBlendSpaceRemoveSampleToJson(Path, Index));
+	}
+
+	if (Method == TEXT("anim.save"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		return MakeResponse(Id, Commandlet->AnimSaveToJson(Path));
+	}
+
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));
 }
 

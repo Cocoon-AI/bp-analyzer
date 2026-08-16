@@ -215,6 +215,20 @@ public:
 	// TracksFrame, read from the uncompressed RawAnimationData keys.
 	TSharedPtr<FJsonObject> AnimExportToJson(const FString& Path, bool bTracks = false, int32 TracksFrame = 0);
 
+	// --- Animation asset mutation (BlueprintExportAnimEdit.cpp) ---
+	// Import saves immediately; everything else stages in memory and
+	// persists via AnimSaveToJson (anim assets are not Blueprints — the
+	// Blueprint edit save path does not apply). Blend space mutations end
+	// with a full grid resample (vendored Persona triangulation) so the
+	// asset blends at runtime without ever being opened in the editor.
+	TSharedPtr<FJsonObject> AnimImportFbxToJson(const FString& FbxPath, const FString& SkeletonPath, const FString& DestPath);
+	TSharedPtr<FJsonObject> AnimSetAdditiveToJson(const FString& Path, const FString& TypeStr, const FString& BasePosePath, const FString& BasePoseTypeStr, int32 RefFrame);
+	TSharedPtr<FJsonObject> AnimBlendSpaceCreateToJson(const FString& DestPath, const FString& ClassName, const FString& SkeletonPath);
+	TSharedPtr<FJsonObject> AnimBlendSpaceSetAxisToJson(const FString& Path, int32 AxisIndex, const FString& AxisName, bool bHasMin, double Min, bool bHasMax, double Max, bool bHasGridNum, int32 GridNum);
+	TSharedPtr<FJsonObject> AnimBlendSpaceAddSampleToJson(const FString& Path, const FString& AnimationPath, double X, double Y);
+	TSharedPtr<FJsonObject> AnimBlendSpaceRemoveSampleToJson(const FString& Path, int32 SampleIndex);
+	TSharedPtr<FJsonObject> AnimSaveToJson(const FString& Path);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

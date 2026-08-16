@@ -29,6 +29,7 @@
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/Skeleton.h"
+#include "UObject/ObjectRedirector.h"
 #include "UObject/UnrealType.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -440,6 +441,14 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimExportToJson(const FStri
 	if (!Asset)
 	{
 		return Anim_MakeError(FString::Printf(TEXT("Failed to load asset at path: %s"), *Path));
+	}
+
+	// Follow redirectors: blendspace samples and other stale references often
+	// point at moved assets; resolve to the target instead of erroring.
+	while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(Asset))
+	{
+		if (!Redirector->DestinationObject) { break; }
+		Asset = Redirector->DestinationObject;
 	}
 
 	UAnimationAsset* AnimAsset = Cast<UAnimationAsset>(Asset);

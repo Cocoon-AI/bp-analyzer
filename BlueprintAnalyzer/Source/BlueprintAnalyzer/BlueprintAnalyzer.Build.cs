@@ -31,7 +31,9 @@ public class BlueprintAnalyzer : ModuleRules
 				// UMG + UMGEditor for WidgetTree introspection (UWidget, UPanelWidget,
 				// UPanelSlot, UWidgetBlueprint).
 				"UMG",
-				"UMGEditor"
+				"UMGEditor",
+				// IAssetTools::ImportAssetTasks for automated FBX anim import.
+				"AssetTools"
 			});
 		}
 	}

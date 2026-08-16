@@ -202,6 +202,21 @@ digbp font save --path=/Game/Showdown/UI/Fonts/RobotoSlab
 # curves); AnimMontage → anim_montage (blend in/out, slots/segments, sections).
 digbp anim export --path=/Game/Showdown/Characters/Animation/Cowboy/BlendSpaces/AimBS_Cowboy_Rider_Rifle
 digbp anim export --path=/Game/Showdown/Characters/Animation/Cowboy/Montages/AM_Cowboy_Reload --pretty
+digbp anim export --path=/Game/.../AS_Pose_01 --tracks --frame=0   # raw per-bone local transforms (FBX round-trip oracle)
+
+# Animation asset mutation (mounted rear-aim pose pipeline). anim import
+# SAVES immediately (batch-friendly); anim edit ops stage in memory and
+# persist with `anim save` (anim assets aren't BPs — edit save doesn't apply).
+# Blend space edits retriangulate the grid headlessly (vendored Persona
+# triangulation) so assets blend at runtime without an editor open.
+digbp anim import --fbx=E:/poses/pose_01.fbx --skeleton=/Game/.../SKEL_Gunslinger --dest=/Game/.../AS_Pose_01
+digbp anim edit set-additive --path=/Game/.../AS_Pose_01 --type=RotationOffsetMeshSpace \
+    --base-pose=/Game/.../AS_Idle --base-pose-type=AnimFrame --ref-frame=0   # --type=None clears
+digbp anim edit blendspace create --dest=/Game/.../AimBS_New --class=AimOffsetBlendSpace --skeleton=/Game/.../SKEL_Gunslinger
+digbp anim edit blendspace set-axis --path=/Game/.../AimBS_New --axis=0 --name=Yaw --min=-90 --max=90 --grid-num=4
+digbp anim edit blendspace add-sample --path=/Game/.../AimBS_New --animation=/Game/.../AS_Pose_01 --x=-90 --y=0
+digbp anim edit blendspace remove-sample --path=/Game/.../AimBS_New --index=0   # RemoveAtSwap: indices shift, re-export between removes
+digbp anim save --path=/Game/.../AimBS_New
 
 # Pretty-print JSON output
 digbp export --path=/Game/BP --pretty
@@ -389,6 +404,8 @@ bp-analyzer/
 │           ├── BlueprintExportCommandlet.cpp # CLI + output formatting
 │           ├── BlueprintExportCommandlet.h
 │           ├── BlueprintExportAnim.cpp   # Anim asset export (BlendSpace/Sequence/Montage)
+│           ├── BlueprintExportAnimEdit.cpp # Anim mutation (FBX import, additive, blendspace)
+│           ├── AnimationBlendSpace*Helpers.* # Vendored Persona grid triangulation (DigBSGrid)
 │           ├── BlueprintExportServer.cpp # Named pipe server + JSON-RPC dispatch
 │           ├── BlueprintExportServer.h
 │           ├── BlueprintExportServerEditDispatch.cpp # Edit method routing
