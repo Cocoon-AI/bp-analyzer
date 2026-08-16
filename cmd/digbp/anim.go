@@ -320,9 +320,10 @@ func animExportCmd() *cobra.Command {
 
 Always present: path, name, asset_class, skeleton.
 
---tracks (AnimSequence only) adds tracks: [{bone, skeleton_bone_index,
-pos:[x,y,z], rot:[x,y,z,w], scale:[x,y,z]}] for the frame given by --frame
-(default 0). Transforms are bone-local (relative to parent), read from the
+--tracks (AnimSequence only) adds tracks, tracks_frame, and tracks_space as
+TOP-LEVEL response keys (siblings of anim_sequence, not nested inside it):
+tracks: [{bone, skeleton_bone_index, pos:[x,y,z], rot:[x,y,z,w],
+scale:[x,y,z]}] for the frame given by --frame (default 0). Transforms are bone-local (relative to parent), read from the
 uncompressed raw import keys — compression does not affect them, so they are
 suitable as a round-trip fidelity oracle against source poses. Only animated
 (authored-track) bones appear; constant tracks report their single key.`,
