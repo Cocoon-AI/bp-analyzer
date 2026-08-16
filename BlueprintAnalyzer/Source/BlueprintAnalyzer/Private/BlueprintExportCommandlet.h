@@ -211,7 +211,9 @@ public:
 	// Read-only JSON export dispatching on asset class: BlendSpace family
 	// (axes, interpolation, samples), UAnimSequence (length/frames/additive/
 	// sync markers/notifies/curves), UAnimMontage (blend, slots, sections).
-	TSharedPtr<FJsonObject> AnimExportToJson(const FString& Path);
+	// bTracks (AnimSequence only) adds per-bone local-space transforms at
+	// TracksFrame, read from the uncompressed RawAnimationData keys.
+	TSharedPtr<FJsonObject> AnimExportToJson(const FString& Path, bool bTracks = false, int32 TracksFrame = 0);
 
 private:
 	// CLI wrappers that call ToJson methods and output results

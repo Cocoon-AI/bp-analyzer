@@ -24,7 +24,11 @@ AimOffsetBlendSpace1D, AnimSequence, AnimMontage.`,
 }
 
 func animExportCmd() *cobra.Command {
-	var path string
+	var (
+		path   string
+		tracks bool
+		frame  int
+	)
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Export an animation asset as JSON (dispatches on asset class)",
@@ -41,12 +45,26 @@ func animExportCmd() *cobra.Command {
   anim_montage   length, blend in/out, sync group, slots (segments with
                  animation path and timing), sections, notifies, curve names.
 
-Always present: path, name, asset_class, skeleton.`,
+Always present: path, name, asset_class, skeleton.
+
+--tracks (AnimSequence only) adds tracks: [{bone, skeleton_bone_index,
+pos:[x,y,z], rot:[x,y,z,w], scale:[x,y,z]}] for the frame given by --frame
+(default 0). Transforms are bone-local (relative to parent), read from the
+uncompressed raw import keys — compression does not affect them, so they are
+suitable as a round-trip fidelity oracle against source poses. Only animated
+(authored-track) bones appear; constant tracks report their single key.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return callServer("anim.export", map[string]interface{}{"path": path})
+			params := map[string]interface{}{"path": path}
+			if tracks {
+				params["tracks"] = true
+				params["frame"] = frame
+			}
+			return callServer("anim.export", params)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "Animation asset path (required, e.g. /Game/Characters/Animation/BS_Run)")
+	cmd.Flags().BoolVar(&tracks, "tracks", false, "Include per-bone local-space transforms at --frame (AnimSequence only)")
+	cmd.Flags().IntVar(&frame, "frame", 0, "Frame to sample for --tracks (0-based)")
 	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }

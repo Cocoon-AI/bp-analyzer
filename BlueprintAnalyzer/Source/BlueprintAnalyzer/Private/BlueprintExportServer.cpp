@@ -866,7 +866,11 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		{
 			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
 		}
-		return MakeResponse(Id, Commandlet->AnimExportToJson(Path));
+		bool bTracks = false;
+		Params->TryGetBoolField(TEXT("tracks"), bTracks);
+		int32 TracksFrame = 0;
+		Params->TryGetNumberField(TEXT("frame"), TracksFrame);
+		return MakeResponse(Id, Commandlet->AnimExportToJson(Path, bTracks, TracksFrame));
 	}
 
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));

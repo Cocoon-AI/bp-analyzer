@@ -276,6 +276,61 @@ namespace
 		return Out;
 	}
 
+	// --- Raw-track dump (anim.export tracks=true) ---
+	//
+	// Per-bone transform at a single frame, read from RawAnimationData — the
+	// uncompressed keys FBX import writes — NOT the compressed runtime stream.
+	// That makes it the right oracle for import round-trip fidelity checks:
+	// comparing against source poses is exact, unaffected by compression.
+	// Transforms are bone-local (relative to parent), quat as [x,y,z,w].
+	// Constant tracks store a single key; sampling clamps the key index.
+
+	TSharedPtr<FJsonValue> Anim_VectorToJson(const FVector& V)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		Out.Add(MakeShareable(new FJsonValueNumber(V.X)));
+		Out.Add(MakeShareable(new FJsonValueNumber(V.Y)));
+		Out.Add(MakeShareable(new FJsonValueNumber(V.Z)));
+		return MakeShareable(new FJsonValueArray(Out));
+	}
+
+	TSharedPtr<FJsonValue> Anim_QuatToJson(const FQuat& Q)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		Out.Add(MakeShareable(new FJsonValueNumber(Q.X)));
+		Out.Add(MakeShareable(new FJsonValueNumber(Q.Y)));
+		Out.Add(MakeShareable(new FJsonValueNumber(Q.Z)));
+		Out.Add(MakeShareable(new FJsonValueNumber(Q.W)));
+		return MakeShareable(new FJsonValueArray(Out));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Anim_TracksToJson(const UAnimSequence* Sequence, int32 Frame)
+	{
+		const TArray<FRawAnimSequenceTrack>& RawTracks = Sequence->GetRawAnimationData();
+		const TArray<FName>& TrackNames = Sequence->GetAnimationTrackNames();
+		const TArray<FTrackToSkeletonMap>& TrackMap = Sequence->GetRawTrackToSkeletonMapTable();
+
+		TArray<TSharedPtr<FJsonValue>> Out;
+		for (int32 TrackIndex = 0; TrackIndex < RawTracks.Num(); ++TrackIndex)
+		{
+			const FRawAnimSequenceTrack& Track = RawTracks[TrackIndex];
+			TSharedPtr<FJsonObject> TrackObj = MakeShareable(new FJsonObject);
+			TrackObj->SetStringField(TEXT("bone"), TrackNames.IsValidIndex(TrackIndex) ? TrackNames[TrackIndex].ToString() : FString::Printf(TEXT("track_%d"), TrackIndex));
+			if (TrackMap.IsValidIndex(TrackIndex))
+			{
+				TrackObj->SetNumberField(TEXT("skeleton_bone_index"), TrackMap[TrackIndex].BoneTreeIndex);
+			}
+			const FVector Pos = Track.PosKeys.Num() > 0 ? Track.PosKeys[FMath::Min(Frame, Track.PosKeys.Num() - 1)] : FVector::ZeroVector;
+			const FQuat Rot = Track.RotKeys.Num() > 0 ? Track.RotKeys[FMath::Min(Frame, Track.RotKeys.Num() - 1)] : FQuat::Identity;
+			const FVector Scale = Track.ScaleKeys.Num() > 0 ? Track.ScaleKeys[FMath::Min(Frame, Track.ScaleKeys.Num() - 1)] : FVector::OneVector;
+			TrackObj->SetField(TEXT("pos"), Anim_VectorToJson(Pos));
+			TrackObj->SetField(TEXT("rot"), Anim_QuatToJson(Rot));
+			TrackObj->SetField(TEXT("scale"), Anim_VectorToJson(Scale));
+			Out.Add(MakeShareable(new FJsonValueObject(TrackObj)));
+		}
+		return Out;
+	}
+
 	// --- UAnimSequence ---
 
 	TSharedPtr<FJsonObject> Anim_SequenceToJson(const UAnimSequence* Sequence)
@@ -374,7 +429,7 @@ namespace
 // anim.export — dispatch on asset class, dump as JSON
 //------------------------------------------------------------------------------
 
-TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimExportToJson(const FString& Path)
+TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimExportToJson(const FString& Path, bool bTracks, int32 TracksFrame)
 {
 	if (Path.IsEmpty())
 	{
@@ -393,6 +448,13 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimExportToJson(const FStri
 		return Anim_MakeError(FString::Printf(
 			TEXT("Asset is not an animation asset (class %s): %s"),
 			*Asset->GetClass()->GetName(), *Path));
+	}
+
+	if (bTracks && !AnimAsset->IsA<UAnimSequence>())
+	{
+		return Anim_MakeError(FString::Printf(
+			TEXT("tracks is only supported for AnimSequence (asset is %s): %s"),
+			*AnimAsset->GetClass()->GetName(), *Path));
 	}
 
 	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
@@ -415,6 +477,17 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimExportToJson(const FStri
 	else if (const UAnimSequence* Sequence = Cast<UAnimSequence>(AnimAsset))
 	{
 		Result->SetObjectField(TEXT("anim_sequence"), Anim_SequenceToJson(Sequence));
+		if (bTracks)
+		{
+			const int32 NumFrames = Sequence->GetRawNumberOfFrames();
+			if (TracksFrame < 0 || TracksFrame >= NumFrames)
+			{
+				return Anim_MakeError(FString::Printf(TEXT("Frame %d out of range (sequence has %d frames)"), TracksFrame, NumFrames));
+			}
+			Result->SetNumberField(TEXT("tracks_frame"), TracksFrame);
+			Result->SetStringField(TEXT("tracks_space"), TEXT("bone_local"));
+			Result->SetArrayField(TEXT("tracks"), Anim_TracksToJson(Sequence, TracksFrame));
+		}
 	}
 	else
 	{
