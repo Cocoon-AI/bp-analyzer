@@ -92,6 +92,12 @@ Or use environment variables: `DIGBP_EDITOR_CMD`, `DIGBP_UPROJECT`, `DIGBP_PIPE_
 
 Build: `cd bp-analyzer && go build -o digbp.exe ./cmd/digbp/`
 
+The pipe server sets the UE source-control provider to None at startup: asset
+saves are SCC-neutral (no auto-add/auto-checkout into the default p4 CL), so
+callers own the p4 lifecycle. Corollary: saving an asset that is read-only on
+disk and not checked out fails loudly — `p4 edit` first, per the documented
+contract.
+
 ### Server Lifecycle
 
 ```bash

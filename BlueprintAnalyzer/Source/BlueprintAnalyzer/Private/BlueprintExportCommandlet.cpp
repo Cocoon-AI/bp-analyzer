@@ -13,6 +13,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
 #include "Animation/AnimationAsset.h"
+#include "ISourceControlModule.h"
 
 // Markers for JSON output parsing
 #define JSON_START_MARKER TEXT("__JSON_START__")
@@ -451,6 +452,14 @@ int32 UBlueprintExportCommandlet::Main(const FString& Params)
 		{
 			ServerPipeName = ParamsMap[TEXT("pipename")];
 		}
+
+		// Keep asset saves SCC-neutral: the editor instance inherits the
+		// project's source-control settings (Perforce), and SavePackages then
+		// auto-adds saved assets to the DEFAULT p4 changelist — fighting any
+		// scripted changelist management by callers. Tooling owns the p4
+		// lifecycle; the server should never touch it.
+		ISourceControlModule::Get().SetProvider(FName(TEXT("None")));
+		UE_LOG(LogTemp, Display, TEXT("BlueprintExport server: source-control provider set to None (asset saves are SCC-neutral)"));
 
 		FBlueprintExportServer Server(this, ServerPipeName);
 		if (Server.Start())

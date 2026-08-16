@@ -33,7 +33,10 @@ public class BlueprintAnalyzer : ModuleRules
 				"UMG",
 				"UMGEditor",
 				// IAssetTools::ImportAssetTasks for automated FBX anim import.
-				"AssetTools"
+				"AssetTools",
+				// ISourceControlModule::SetProvider(None) — pipe server keeps
+				// asset saves SCC-neutral so tooling owns the p4 lifecycle.
+				"SourceControl"
 			});
 		}
 	}

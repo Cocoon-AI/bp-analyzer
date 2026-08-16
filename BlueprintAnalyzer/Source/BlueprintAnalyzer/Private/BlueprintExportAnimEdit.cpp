@@ -281,17 +281,21 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::AnimImportFbxToJson(const FS
 	Tasks.Add(Task);
 	AssetToolsModule.Get().ImportAssetTasks(Tasks);
 
+	// 4.27's ImportAssetTasks reports results ONLY via ImportedObjectPaths —
+	// Task->Result stays empty (it's populated in UE5, not here). Reading
+	// Result made every successful import report failure (gamedev's Task 10
+	// batch). Resolve the paths back to objects instead.
 	UAnimSequence* Imported = nullptr;
-	for (UObject* Obj : Task->Result)
+	for (const FString& ObjectPath : Task->ImportedObjectPaths)
 	{
-		Imported = Cast<UAnimSequence>(Obj);
+		Imported = Cast<UAnimSequence>(StaticFindObject(UAnimSequence::StaticClass(), nullptr, *ObjectPath));
 		if (Imported) { break; }
 	}
 	if (!Imported)
 	{
 		return AnimEdit_MakeError(FString::Printf(
-			TEXT("FBX import produced no AnimSequence (file: %s). Check the server log for FbxFactory errors — common causes: no animation take in the file, or bone names not matching skeleton %s"),
-			*FbxPath, *SkeletonPath));
+			TEXT("FBX import produced no AnimSequence (file: %s, imported objects: [%s]). Check the server log for FbxFactory errors — common causes: no animation take in the file, or bone names not matching skeleton %s"),
+			*FbxPath, *FString::Join(Task->ImportedObjectPaths, TEXT(", ")), *SkeletonPath));
 	}
 
 	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
