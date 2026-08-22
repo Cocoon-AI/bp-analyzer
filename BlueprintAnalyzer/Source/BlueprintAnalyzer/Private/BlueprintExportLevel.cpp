@@ -13,10 +13,11 @@
 // are stored tile-local; world_* fields add the tile's absolute offset
 // (own Position + parent-chain Positions, read the same way).
 //
-// Landscape: ULandscapeInfo::RecreateLandscapeInfo(World) rebuilds the info
-// map for a headless-loaded world; FLandscapeEditDataInterface then reads
-// heightmap/weightmap texture SOURCE data (editor-only, on disk). Heights
-// are fetched in 3-row bands per sampled row so memory stays O(width).
+// Landscape: ULandscapeInfo is NOT usable here (it only indexes registered
+// components), so proxies are collected from ULevel::Actors and each
+// component's heightmap/weightmap texture SOURCE is read through
+// FLandscapeComponentDataInterface (editor-only, on disk, per-component
+// mip lock cached for the duration of one request).
 //
 // Unity-build note: unique Level_ prefix on file-local helpers.
 
@@ -46,10 +47,8 @@
 #include "LandscapeProxy.h"
 #include "Landscape.h"
 #include "LandscapeComponent.h"
-#include "LandscapeInfo.h"
-#include "LandscapeInfoMap.h"
 #include "LandscapeLayerInfoObject.h"
-#include "LandscapeEdit.h"
+#include "LandscapeDataAccess.h"
 #include "InstancedFoliageActor.h"
 #include "InstancedFoliage.h"
 #include "FoliageType.h"
@@ -544,37 +543,6 @@ namespace
 		}
 		return O;
 	}
-
-	// ------------------------------------------------------------------
-	// Landscape helpers
-	// ------------------------------------------------------------------
-
-	struct FLevel_Sample
-	{
-		int32 QX = 0;
-		int32 QY = 0;
-		uint16 Raw = 0;
-		FVector World = FVector::ZeroVector;
-		FVector Normal = FVector::UpVector;
-		float SlopeDeg = 0.0f;
-		TMap<FName, float> Weights;
-	};
-
-	// Fetch a band of rows [Y-1..Y+1] (clamped to extent) x [X1..X2].
-	void Level_FetchBand(FLandscapeEditDataInterface& Edit, int32 X1, int32 X2, int32 Y, int32 MinY, int32 MaxY, TArray<uint16>& Out, int32& OutY0, int32& OutRows)
-	{
-		OutY0 = FMath::Max(MinY, Y - 1);
-		const int32 Y1 = FMath::Min(MaxY, Y + 1);
-		OutRows = Y1 - OutY0 + 1;
-		const int32 W = X2 - X1 + 1;
-		Out.SetNumZeroed(W * OutRows);
-		Edit.GetHeightDataFast(X1, OutY0, X2, Y1, Out.GetData(), W);
-	}
-
-	float Level_RawToLocalZ(uint16 Raw)
-	{
-		return ((float)Raw - 32768.0f) / 128.0f;
-	}
 }
 
 // ----------------------------------------------------------------------
@@ -799,7 +767,196 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::LevelActorsToJson(const FStr
 
 // ----------------------------------------------------------------------
 // level.landscape
+//
+// Headless-loaded worlds never register components, and
+// ULandscapeInfo::RegisterActorComponent skips unregistered components, so
+// the ULandscapeInfo / FLandscapeEditDataInterface route yields an empty
+// XYtoComponentMap (gamedev hit "No landscape found" on Sunrise). Instead we
+// walk ULevel::Actors for ALandscapeProxy, key components by
+// SectionBase / ComponentSizeQuads ourselves, and read each component's
+// heightmap/weightmap texture SOURCE via FLandscapeComponentDataInterface,
+// which only needs the component object (locks the mip's bulk data).
 // ----------------------------------------------------------------------
+
+namespace
+{
+	// One landscape (shared GUID) assembled from the level's proxies.
+	struct FLevel_LandscapeSet
+	{
+		FGuid Guid;
+		ALandscapeProxy* Primary = nullptr;               // ALandscape if present, else first proxy
+		TArray<ALandscapeProxy*> Proxies;
+		TMap<FIntPoint, ULandscapeComponent*> Components; // key = SectionBase / ComponentSizeQuads
+		int32 ComponentSizeQuads = 0;
+		int32 SubsectionSizeQuads = 0;
+		int32 NumSubsections = 0;
+		FIntPoint MinKey = FIntPoint(MAX_int32, MAX_int32);
+		FIntPoint MaxKey = FIntPoint(MIN_int32, MIN_int32);
+		TArray<ULandscapeLayerInfoObject*> Layers;
+
+		int32 MinX() const { return MinKey.X * ComponentSizeQuads; }
+		int32 MinY() const { return MinKey.Y * ComponentSizeQuads; }
+		int32 MaxX() const { return (MaxKey.X + 1) * ComponentSizeQuads; }
+		int32 MaxY() const { return (MaxKey.Y + 1) * ComponentSizeQuads; }
+	};
+
+	// Per-component cached reader: heightmap mip lock + per-layer weight arrays.
+	struct FLevel_CompReader
+	{
+		TUniquePtr<FLandscapeComponentDataInterface> Data;
+		TMap<ULandscapeLayerInfoObject*, TArray<uint8>> Weights; // empty array = layer not painted here
+	};
+
+	struct FLevel_LandscapeSampler
+	{
+		const FLevel_LandscapeSet& Set;
+		TMap<ULandscapeComponent*, TUniquePtr<FLevel_CompReader>> Readers;
+
+		explicit FLevel_LandscapeSampler(const FLevel_LandscapeSet& InSet) : Set(InSet) {}
+
+		// Resolve quad coords to (component, local vertex). Edge vertices are
+		// shared between neighbours; clamping the key keeps the landscape's
+		// max edge resolvable.
+		ULandscapeComponent* Resolve(int32 QX, int32 QY, int32& LX, int32& LY)
+		{
+			const int32 CSQ = Set.ComponentSizeQuads;
+			int32 KX = FMath::FloorToInt((float)QX / CSQ);
+			int32 KY = FMath::FloorToInt((float)QY / CSQ);
+			KX = FMath::Clamp(KX, Set.MinKey.X, Set.MaxKey.X);
+			KY = FMath::Clamp(KY, Set.MinKey.Y, Set.MaxKey.Y);
+			ULandscapeComponent* const* Found = Set.Components.Find(FIntPoint(KX, KY));
+			if (!Found)
+			{
+				return nullptr;
+			}
+			LX = FMath::Clamp(QX - KX * CSQ, 0, CSQ);
+			LY = FMath::Clamp(QY - KY * CSQ, 0, CSQ);
+			return *Found;
+		}
+
+		FLevel_CompReader& ReaderFor(ULandscapeComponent* C)
+		{
+			TUniquePtr<FLevel_CompReader>& R = Readers.FindOrAdd(C);
+			if (!R)
+			{
+				R = MakeUnique<FLevel_CompReader>();
+				// InWorkOnEditingLayer=false → final (baked) heightmap, not the edit-layer scratch.
+				R->Data = MakeUnique<FLandscapeComponentDataInterface>(C, 0, /*InWorkOnEditingLayer*/false);
+			}
+			return *R;
+		}
+
+		// Raw uint16 height at quad coords; false if no component covers it.
+		bool RawHeight(int32 QX, int32 QY, uint16& Out)
+		{
+			int32 LX, LY;
+			ULandscapeComponent* C = Resolve(QX, QY, LX, LY);
+			if (!C)
+			{
+				return false;
+			}
+			FLevel_CompReader& R = ReaderFor(C);
+			if (!R.Data->GetRawHeightData())
+			{
+				return false;
+			}
+			Out = R.Data->GetHeight(LX, LY);
+			return true;
+		}
+
+		// Weight 0..1 for a layer at quad coords (0 if unpainted / uncovered).
+		float Weight(int32 QX, int32 QY, ULandscapeLayerInfoObject* Layer)
+		{
+			int32 LX, LY;
+			ULandscapeComponent* C = Resolve(QX, QY, LX, LY);
+			if (!C)
+			{
+				return 0.0f;
+			}
+			FLevel_CompReader& R = ReaderFor(C);
+			TArray<uint8>* W = R.Weights.Find(Layer);
+			if (!W)
+			{
+				W = &R.Weights.Add(Layer);
+				R.Data->GetWeightmapTextureData(Layer, *W, /*InUseEditingWeightmap*/false);
+			}
+			const int32 Verts = Set.ComponentSizeQuads + 1;
+			const int32 Idx = LY * Verts + LX;
+			if (!W->IsValidIndex(Idx))
+			{
+				return 0.0f;
+			}
+			return (*W)[Idx] / 255.0f;
+		}
+	};
+
+	float Level_RawToLocalZ(uint16 Raw)
+	{
+		return ((float)Raw - 32768.0f) / 128.0f;
+	}
+
+	// Group the level's landscape proxies by GUID and index their components.
+	void Level_CollectLandscapes(ULevel* Level, TArray<FLevel_LandscapeSet>& Out)
+	{
+		TMap<FGuid, int32> GuidToIdx;
+		for (AActor* A : Level->Actors)
+		{
+			ALandscapeProxy* Proxy = Cast<ALandscapeProxy>(A);
+			if (!Proxy || Proxy->IsPendingKill())
+			{
+				continue;
+			}
+			int32* IdxPtr = GuidToIdx.Find(Proxy->GetLandscapeGuid());
+			if (!IdxPtr)
+			{
+				FLevel_LandscapeSet NewSet;
+				NewSet.Guid = Proxy->GetLandscapeGuid();
+				NewSet.ComponentSizeQuads = Proxy->ComponentSizeQuads;
+				NewSet.SubsectionSizeQuads = Proxy->SubsectionSizeQuads;
+				NewSet.NumSubsections = Proxy->NumSubsections;
+				const int32 NewIdx = Out.Add(MoveTemp(NewSet));
+				IdxPtr = &GuidToIdx.Add(Proxy->GetLandscapeGuid(), NewIdx);
+			}
+			FLevel_LandscapeSet& Set = Out[*IdxPtr];
+			Set.Proxies.Add(Proxy);
+			if (!Set.Primary || Proxy->IsA<ALandscape>())
+			{
+				Set.Primary = Proxy;
+			}
+			if (Set.ComponentSizeQuads <= 0)
+			{
+				continue;
+			}
+			for (ULandscapeComponent* C : Proxy->LandscapeComponents)
+			{
+				if (!C)
+				{
+					continue;
+				}
+				const FIntPoint Key = C->GetSectionBase() / Set.ComponentSizeQuads;
+				Set.Components.Add(Key, C);
+				Set.MinKey.X = FMath::Min(Set.MinKey.X, Key.X);
+				Set.MinKey.Y = FMath::Min(Set.MinKey.Y, Key.Y);
+				Set.MaxKey.X = FMath::Max(Set.MaxKey.X, Key.X);
+				Set.MaxKey.Y = FMath::Max(Set.MaxKey.Y, Key.Y);
+				for (const FWeightmapLayerAllocationInfo& Alloc : C->GetWeightmapLayerAllocations())
+				{
+					if (Alloc.LayerInfo)
+					{
+						Set.Layers.AddUnique(Alloc.LayerInfo);
+					}
+				}
+			}
+		}
+		for (FLevel_LandscapeSet& Set : Out)
+		{
+			Set.Layers.Sort([](const ULandscapeLayerInfoObject& A, const ULandscapeLayerInfoObject& B)
+			{
+				return A.LayerName.LexicalLess(B.LayerName);
+			});
+		}
+	}
+}
 
 TSharedPtr<FJsonObject> UBlueprintExportCommandlet::LevelLandscapeToJson(const FString& Path, int32 GridN, const TArray<FVector2D>& Points, bool bLayers, bool bUnload)
 {
@@ -818,44 +975,43 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::LevelLandscapeToJson(const F
 		return Level_MakeError(Err);
 	}
 
-	ULandscapeInfo::RecreateLandscapeInfo(World, /*bMapCheck*/false);
+	TArray<FLevel_LandscapeSet> Sets;
+	if (World->PersistentLevel)
+	{
+		Level_CollectLandscapes(World->PersistentLevel, Sets);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> Landscapes;
-	ULandscapeInfoMap& InfoMap = ULandscapeInfoMap::GetLandscapeInfoMap(World);
-	for (auto& Pair : InfoMap.Map)
+	for (FLevel_LandscapeSet& Set : Sets)
 	{
-		ULandscapeInfo* Info = Pair.Value;
-		if (!Info)
+		if (Set.Components.Num() == 0 || Set.ComponentSizeQuads <= 0 || !Set.Primary)
 		{
 			continue;
 		}
-		ALandscapeProxy* Proxy = Info->GetLandscapeProxy();
-		if (!Proxy)
-		{
-			continue;
-		}
-		int32 MinX, MinY, MaxX, MaxY;
-		if (!Info->GetLandscapeExtent(MinX, MinY, MaxX, MaxY))
-		{
-			continue;
-		}
+		// LandscapeActorToWorld reads the root component transform — refresh
+		// it first (unregistered components have a stale ComponentToWorld).
+		Level_RefreshTransforms(Set.Primary);
+		const FTransform L2W = Set.Primary->LandscapeActorToWorld();
+		const int32 MinX = Set.MinX();
+		const int32 MinY = Set.MinY();
+		const int32 MaxX = Set.MaxX();
+		const int32 MaxY = Set.MaxY();
 
-		const FTransform L2W = Proxy->LandscapeActorToWorld();
 		TSharedPtr<FJsonObject> LJ = MakeShareable(new FJsonObject);
-		LJ->SetStringField(TEXT("guid"), Info->LandscapeGuid.ToString());
-		LJ->SetStringField(TEXT("actor"), Proxy->GetName());
+		LJ->SetStringField(TEXT("guid"), Set.Guid.ToString());
+		LJ->SetStringField(TEXT("actor"), Set.Primary->GetName());
 		TArray<TSharedPtr<FJsonValue>> ProxyNames;
-		Info->ForAllLandscapeProxies([&ProxyNames](ALandscapeProxy* P)
+		for (ALandscapeProxy* P : Set.Proxies)
 		{
 			ProxyNames.Add(MakeShareable(new FJsonValueString(P->GetName())));
-		});
+		}
 		LJ->SetArrayField(TEXT("proxies"), ProxyNames);
 		TSharedPtr<FJsonObject> TJ = MakeShareable(new FJsonObject);
 		Level_SetTransform(TJ, L2W, TEXT(""));
 		LJ->SetObjectField(TEXT("transform"), TJ);
-		LJ->SetNumberField(TEXT("component_size_quads"), Info->ComponentSizeQuads);
-		LJ->SetNumberField(TEXT("subsection_size_quads"), Info->SubsectionSizeQuads);
-		LJ->SetNumberField(TEXT("num_subsections"), Info->ComponentNumSubsections);
+		LJ->SetNumberField(TEXT("component_size_quads"), Set.ComponentSizeQuads);
+		LJ->SetNumberField(TEXT("subsection_size_quads"), Set.SubsectionSizeQuads);
+		LJ->SetNumberField(TEXT("num_subsections"), Set.NumSubsections);
 		TSharedPtr<FJsonObject> EJ = MakeShareable(new FJsonObject);
 		EJ->SetNumberField(TEXT("min_x"), MinX);
 		EJ->SetNumberField(TEXT("min_y"), MinY);
@@ -866,129 +1022,94 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::LevelLandscapeToJson(const F
 		WB += L2W.TransformPosition(FVector(MinX, MinY, Level_RawToLocalZ(0)));
 		WB += L2W.TransformPosition(FVector(MaxX, MaxY, Level_RawToLocalZ(65535)));
 		LJ->SetField(TEXT("world_bounds"), Level_Box(WB));
-		LJ->SetNumberField(TEXT("component_count"), Info->XYtoComponentMap.Num());
+		LJ->SetNumberField(TEXT("component_count"), Set.Components.Num());
+		TSharedPtr<FJsonObject> CG = MakeShareable(new FJsonObject);
+		CG->SetObjectField(TEXT("min"), Level_IntPoint(Set.MinKey));
+		CG->SetObjectField(TEXT("max"), Level_IntPoint(Set.MaxKey));
+		LJ->SetObjectField(TEXT("component_grid"), CG);
 
 		TArray<TSharedPtr<FJsonValue>> LayersArr;
-		TArray<ULandscapeLayerInfoObject*> LayerObjs;
-		for (const FLandscapeInfoLayerSettings& LS : Info->Layers)
+		for (ULandscapeLayerInfoObject* LO : Set.Layers)
 		{
 			TSharedPtr<FJsonObject> SJ = MakeShareable(new FJsonObject);
-			SJ->SetStringField(TEXT("name"), LS.LayerName.ToString());
-			SJ->SetField(TEXT("layer_info"), Level_PathOrNull(LS.LayerInfoObj));
-			if (LS.LayerInfoObj)
-			{
-				SJ->SetNumberField(TEXT("hardness"), LS.LayerInfoObj->Hardness);
-				SJ->SetBoolField(TEXT("no_weight_blend"), LS.LayerInfoObj->bNoWeightBlend != 0);
-				LayerObjs.AddUnique(LS.LayerInfoObj);
-			}
+			SJ->SetStringField(TEXT("name"), LO->LayerName.ToString());
+			SJ->SetStringField(TEXT("layer_info"), LO->GetPathName());
+			SJ->SetNumberField(TEXT("hardness"), LO->Hardness);
+			SJ->SetBoolField(TEXT("no_weight_blend"), LO->bNoWeightBlend != 0);
 			LayersArr.Add(MakeShareable(new FJsonValueObject(SJ)));
 		}
 		LJ->SetArrayField(TEXT("layers"), LayersArr);
 
 		// --- Sampling ---
-		FLandscapeEditDataInterface Edit(Info, /*bUploadTextureChangesToGPU*/false);
 		const bool bPointsMode = Points.Num() > 0;
 		const bool bWantWeights = bLayers || bPointsMode;
 		const int32 N = FMath::Max(GridN, 2);
-
-		// (QY -> [QX...]) so each row's band is fetched once.
-		TMap<int32, TArray<int32>> RowToXs;
+		TArray<FIntPoint> Targets;
 		if (bPointsMode)
 		{
 			for (const FVector2D& P : Points)
 			{
 				const FVector Local = L2W.InverseTransformPosition(FVector(P.X, P.Y, 0.0f));
-				const int32 QX = FMath::Clamp(FMath::RoundToInt(Local.X), MinX, MaxX);
-				const int32 QY = FMath::Clamp(FMath::RoundToInt(Local.Y), MinY, MaxY);
-				RowToXs.FindOrAdd(QY).Add(QX);
+				Targets.Add(FIntPoint(
+					FMath::Clamp(FMath::RoundToInt(Local.X), MinX, MaxX),
+					FMath::Clamp(FMath::RoundToInt(Local.Y), MinY, MaxY)));
 			}
 		}
 		else
 		{
+			Targets.Reserve(N * N);
 			for (int32 j = 0; j < N; ++j)
 			{
 				const int32 QY = MinY + FMath::RoundToInt((double)(MaxY - MinY) * j / (N - 1));
-				TArray<int32>& Xs = RowToXs.FindOrAdd(QY);
 				for (int32 i = 0; i < N; ++i)
 				{
-					Xs.Add(MinX + FMath::RoundToInt((double)(MaxX - MinX) * i / (N - 1)));
+					Targets.Add(FIntPoint(MinX + FMath::RoundToInt((double)(MaxX - MinX) * i / (N - 1)), QY));
 				}
 			}
 		}
-		TArray<int32> Rows;
-		RowToXs.GetKeys(Rows);
-		Rows.Sort();
 
-		const int32 W = MaxX - MinX + 1;
+		FLevel_LandscapeSampler Sampler(Set);
 		const FVector Scale = L2W.GetScale3D();
-		TArray<FLevel_Sample> Samples;
-		for (int32 QY : Rows)
-		{
-			TArray<uint16> Band;
-			int32 Y0 = 0, NRows = 0;
-			Level_FetchBand(Edit, MinX, MaxX, QY, MinY, MaxY, Band, Y0, NRows);
-			auto H = [&](int32 X, int32 Y) -> float
-			{
-				X = FMath::Clamp(X, MinX, MaxX);
-				Y = FMath::Clamp(Y, Y0, Y0 + NRows - 1);
-				return Level_RawToLocalZ(Band[(Y - Y0) * W + (X - MinX)]);
-			};
-			TMap<ULandscapeLayerInfoObject*, TArray<uint8>> RowWeights;
-			if (bWantWeights)
-			{
-				for (ULandscapeLayerInfoObject* LO : LayerObjs)
-				{
-					TArray<uint8>& WData = RowWeights.Add(LO);
-					WData.SetNumZeroed(W);
-					Edit.GetWeightDataFast(LO, MinX, QY, MaxX, QY, WData.GetData(), W);
-				}
-			}
-			for (int32 QX : RowToXs[QY])
-			{
-				FLevel_Sample S;
-				S.QX = QX;
-				S.QY = QY;
-				S.Raw = Band[(QY - Y0) * W + (QX - MinX)];
-				const float Z = Level_RawToLocalZ(S.Raw);
-				S.World = L2W.TransformPosition(FVector(QX, QY, Z));
-				// Central difference; quad spacing is Scale.X/Y world units.
-				const float DzDx = (H(QX + 1, QY) - H(QX - 1, QY)) * Scale.Z / (2.0f * Scale.X);
-				const float DzDy = (H(QX, QY + 1) - H(QX, QY - 1)) * Scale.Z / (2.0f * Scale.Y);
-				S.Normal = FVector(-DzDx, -DzDy, 1.0f).GetSafeNormal();
-				S.SlopeDeg = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(S.Normal.Z, -1.0f, 1.0f)));
-				if (bWantWeights)
-				{
-					for (auto& WP : RowWeights)
-					{
-						S.Weights.Add(WP.Key->LayerName, WP.Value[QX - MinX] / 255.0f);
-					}
-				}
-				Samples.Add(MoveTemp(S));
-			}
-		}
-
+		int32 Uncovered = 0;
 		TArray<TSharedPtr<FJsonValue>> PtsArr;
-		for (const FLevel_Sample& S : Samples)
+		for (const FIntPoint& Q : Targets)
 		{
+			uint16 Raw = 0;
+			if (!Sampler.RawHeight(Q.X, Q.Y, Raw))
+			{
+				++Uncovered; // hole in the component grid (non-rectangular landscape)
+				continue;
+			}
+			const float Z = Level_RawToLocalZ(Raw);
+			auto H = [&Sampler, Z](int32 X, int32 Y) -> float
+			{
+				uint16 R;
+				return Sampler.RawHeight(X, Y, R) ? Level_RawToLocalZ(R) : Z;
+			};
+			const float DzDx = (H(Q.X + 1, Q.Y) - H(Q.X - 1, Q.Y)) * Scale.Z / (2.0f * Scale.X);
+			const float DzDy = (H(Q.X, Q.Y + 1) - H(Q.X, Q.Y - 1)) * Scale.Z / (2.0f * Scale.Y);
+			const FVector Normal = FVector(-DzDx, -DzDy, 1.0f).GetSafeNormal();
+
 			TSharedPtr<FJsonObject> PJ = MakeShareable(new FJsonObject);
-			PJ->SetNumberField(TEXT("qx"), S.QX);
-			PJ->SetNumberField(TEXT("qy"), S.QY);
-			PJ->SetObjectField(TEXT("world"), Level_Vec(S.World));
-			PJ->SetNumberField(TEXT("height_raw"), S.Raw);
-			PJ->SetObjectField(TEXT("normal"), Level_Vec(S.Normal));
-			PJ->SetNumberField(TEXT("slope_deg"), S.SlopeDeg);
-			if (S.Weights.Num() > 0)
+			PJ->SetNumberField(TEXT("qx"), Q.X);
+			PJ->SetNumberField(TEXT("qy"), Q.Y);
+			PJ->SetObjectField(TEXT("world"), Level_Vec(L2W.TransformPosition(FVector(Q.X, Q.Y, Z))));
+			PJ->SetNumberField(TEXT("height_raw"), Raw);
+			PJ->SetObjectField(TEXT("normal"), Level_Vec(Normal));
+			PJ->SetNumberField(TEXT("slope_deg"), FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Normal.Z, -1.0f, 1.0f))));
+			if (bWantWeights && Set.Layers.Num() > 0)
 			{
 				FName Dominant = NAME_None;
 				float Best = -1.0f;
 				TSharedPtr<FJsonObject> WJ = MakeShareable(new FJsonObject);
-				for (auto& WP : S.Weights)
+				for (ULandscapeLayerInfoObject* LO : Set.Layers)
 				{
-					WJ->SetNumberField(WP.Key.ToString(), WP.Value);
-					if (WP.Value > Best)
+					const float Wt = Sampler.Weight(Q.X, Q.Y, LO);
+					WJ->SetNumberField(LO->LayerName.ToString(), Wt);
+					if (Wt > Best)
 					{
-						Best = WP.Value;
-						Dominant = WP.Key;
+						Best = Wt;
+						Dominant = LO->LayerName;
 					}
 				}
 				PJ->SetStringField(TEXT("dominant_layer"), Dominant.ToString());
@@ -1003,6 +1124,7 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::LevelLandscapeToJson(const F
 			SJ->SetNumberField(TEXT("grid"), N);
 		}
 		SJ->SetNumberField(TEXT("count"), PtsArr.Num());
+		SJ->SetNumberField(TEXT("uncovered"), Uncovered);
 		SJ->SetArrayField(TEXT("points"), PtsArr);
 		LJ->SetObjectField(TEXT("samples"), SJ);
 		Landscapes.Add(MakeShareable(new FJsonValueObject(LJ)));
@@ -1014,7 +1136,7 @@ TSharedPtr<FJsonObject> UBlueprintExportCommandlet::LevelLandscapeToJson(const F
 		{
 			Level_UnloadWorld(World);
 		}
-		return Level_MakeError(FString::Printf(TEXT("No landscape found in %s"), *Path));
+		return Level_MakeError(FString::Printf(TEXT("No landscape proxies with components in %s"), *Path));
 	}
 	TSharedPtr<FJsonObject> Out = MakeShareable(new FJsonObject);
 	Out->SetBoolField(TEXT("success"), true);
