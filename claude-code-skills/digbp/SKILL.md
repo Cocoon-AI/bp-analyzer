@@ -158,6 +158,45 @@ Dispatcher UPROPERTYs always get **both** `BlueprintAssignable` and `BlueprintCa
 
 **BP variable metadata is preserved** — `ExposeOnSpawn`, `UIMin/UIMax`, `ClampMin/ClampMax`, `EditCondition`, `BlueprintBaseOnly`, and any custom keys the BP author set are emitted as `meta=(Key="Value", ...)` on the generated UPROPERTY. Critical for `ExposeOnSpawn`: without it, external BPs that bound the lifted var as a `K2Node_CreateWidget` exposed pin silently orphan after the lift.
 
+### Level / World Composition / Landscape (`digbp level ...`, read-only)
+
+For map-construction questions (where tiles sit, what actors a sublevel
+contains, what the terrain looks like) that Blueprint export can't answer.
+Loads the .umap headless — no world init, no streaming. World Composition
+tiles are read from package summaries (never fully loaded).
+
+```bash
+# Every map package under a folder
+digbp level list --dir=/Game/Showdown/Maps/Sunrise/Sunrise_SubLevels
+
+# World Composition overview: per tile → package, layer (+streaming distance,
+# distance-streaming on/off), position, absolute_position, bounds, z_order,
+# LODs (package + distances), streaming_class, parent_package. Plus the
+# persistent level's own actors (bounds-only shape) and a per-layer summary.
+digbp level tiles --path=/Game/Showdown/Maps/Sunrise/Sunrise --pretty --out=tiles.json
+
+# Actor dump for one level. Per actor: name/label, class, native_class
+# (nearest C++ ancestor), blueprint_chain, folder, tags, transform, bounds,
+# world_location/world_bounds (tile offset applied), components:
+#   StaticMesh → static_mesh, materials, bounds
+#   ISM/HISM   → instance_count (+ instances with --instances)
+#   ChildActor → child_actor_class (loot generators live here in interiors)
+#   Spline     → points (location/tangents), Brush/volumes → bounds
+# Type summaries: landscape {component_count, section size, layers},
+# foliage [{foliage_type, static_mesh, instance_count}], volume {class, bounds}.
+digbp level actors --path=/Game/Showdown/Maps/Sunrise/Sunrise_SubLevels/Tile_X3_Y2 --pretty
+digbp level actors --path=... --class=Volume,BP_LootGenerator --bounds-only   # matches class, BP parents, native ancestors
+digbp level actors --dir=/Game/Showdown/Maps/Sunrise/Sunrise_SubLevels --out=E:/tmp/sunrise_actors   # batch: one JSON per map
+
+# Landscape sampling: extent, transform, component grid, layer infos, and
+# samples {qx,qy, world{x,y,z}, height_raw, normal, slope_deg, dominant_layer, weights}
+digbp level landscape --path=/Game/Showdown/Maps/Landscape/Sunrise_Landscape --grid=64 --layers --csv=E:/tmp/hm.csv
+digbp level landscape --path=/Game/Showdown/Maps/Landscape/Sunrise_Landscape --points="12000,-3400;0,0"
+```
+
+Coordinates: tile actors are stored **tile-local**; use `world_*` fields (or
+add `tile.absolute_position`) for map space. Grid mode caps at `--grid=1024`.
+
 ## Editing Blueprints (`digbp edit ...`)
 
 All mutation commands live under `digbp edit`. They share a core discipline:
