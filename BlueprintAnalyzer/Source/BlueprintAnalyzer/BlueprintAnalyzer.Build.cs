@@ -36,7 +36,11 @@ public class BlueprintAnalyzer : ModuleRules
 				"AssetTools",
 				// ISourceControlModule::SetProvider(None) — pipe server keeps
 				// asset saves SCC-neutral so tooling owns the p4 lifecycle.
-				"SourceControl"
+				"SourceControl",
+				// ULandscapeInfo / FLandscapeEditDataInterface for `level landscape`.
+				"Landscape",
+				// AInstancedFoliageActor for `level actors` foliage summaries.
+				"Foliage"
 			});
 		}
 	}

@@ -232,6 +232,19 @@ public:
 	TSharedPtr<FJsonObject> AnimBlendSpaceRemoveSampleToJson(const FString& Path, int32 SampleIndex);
 	TSharedPtr<FJsonObject> AnimSaveToJson(const FString& Path);
 
+	// --- Level / World Composition export (BlueprintExportLevel.cpp) ---
+	// Read-only. Loads the map package (no world init, no streaming).
+	// LevelListToJson: asset-registry World assets under Dir (recursive).
+	// LevelTilesToJson: UWorldComposition tile table (tiles read from
+	// package summaries, never fully loaded) + persistent-level actors.
+	// LevelActorsToJson: ULevel::Actors dump with components/bounds.
+	// LevelLandscapeToJson: height/weight sampling via FLandscapeEditDataInterface.
+	// bUnload: UnloadPackages + GC after export (batch walks).
+	TSharedPtr<FJsonObject> LevelListToJson(const FString& Dir);
+	TSharedPtr<FJsonObject> LevelTilesToJson(const FString& Path);
+	TSharedPtr<FJsonObject> LevelActorsToJson(const FString& Path, const TArray<FString>& ClassFilters, bool bBoundsOnly, bool bInstances, bool bUnload);
+	TSharedPtr<FJsonObject> LevelLandscapeToJson(const FString& Path, int32 GridN, const TArray<FVector2D>& Points, bool bLayers, bool bUnload);
+
 private:
 	// CLI wrappers that call ToJson methods and output results
 	void ExportBlueprint(const FString& BlueprintPath, bool bAnalyze);

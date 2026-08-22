@@ -995,6 +995,83 @@ TSharedPtr<FJsonObject> FBlueprintExportServer::DispatchRequest(const TSharedPtr
 		return MakeResponse(Id, Commandlet->AnimSaveToJson(Path));
 	}
 
+	// --- Level / World Composition export (read-only) ---
+
+	if (Method == TEXT("level.list"))
+	{
+		FString Dir;
+		if (!Params->TryGetStringField(TEXT("dir"), Dir) || Dir.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: dir"));
+		}
+		return MakeResponse(Id, Commandlet->LevelListToJson(Dir));
+	}
+
+	if (Method == TEXT("level.tiles"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		return MakeResponse(Id, Commandlet->LevelTilesToJson(Path));
+	}
+
+	if (Method == TEXT("level.actors"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		TArray<FString> ClassFilters;
+		const TArray<TSharedPtr<FJsonValue>>* ClassArr = nullptr;
+		if (Params->TryGetArrayField(TEXT("classes"), ClassArr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *ClassArr)
+			{
+				ClassFilters.Add(V->AsString());
+			}
+		}
+		bool bBoundsOnly = false, bInstances = false, bUnload = false;
+		Params->TryGetBoolField(TEXT("bounds_only"), bBoundsOnly);
+		Params->TryGetBoolField(TEXT("instances"), bInstances);
+		Params->TryGetBoolField(TEXT("unload"), bUnload);
+		return MakeResponse(Id, Commandlet->LevelActorsToJson(Path, ClassFilters, bBoundsOnly, bInstances, bUnload));
+	}
+
+	if (Method == TEXT("level.landscape"))
+	{
+		FString Path;
+		if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Missing required param: path"));
+		}
+		int32 GridN = 0;
+		Params->TryGetNumberField(TEXT("grid"), GridN);
+		TArray<FVector2D> Points;
+		const TArray<TSharedPtr<FJsonValue>>* PtsArr = nullptr;
+		if (Params->TryGetArrayField(TEXT("points"), PtsArr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *PtsArr)
+			{
+				const TArray<TSharedPtr<FJsonValue>>& Pair = V->AsArray();
+				if (Pair.Num() == 2)
+				{
+					Points.Add(FVector2D((float)Pair[0]->AsNumber(), (float)Pair[1]->AsNumber()));
+				}
+			}
+		}
+		if (GridN <= 0 && Points.Num() == 0)
+		{
+			return MakeErrorResponse(Id, JSONRPC_INVALID_PARAMS, TEXT("Need grid (>0) or points ([[x,y],...])"));
+		}
+		bool bLayers = false, bUnload = false;
+		Params->TryGetBoolField(TEXT("layers"), bLayers);
+		Params->TryGetBoolField(TEXT("unload"), bUnload);
+		return MakeResponse(Id, Commandlet->LevelLandscapeToJson(Path, GridN, Points, bLayers, bUnload));
+	}
+
 	return MakeErrorResponse(Id, JSONRPC_METHOD_NOT_FOUND, FString::Printf(TEXT("Method not found: %s"), *Method));
 }
 
