@@ -68,6 +68,7 @@ func main() {
 		datatableCmd(),
 		fontCmd(),
 		animCmd(),
+		levelCmd(),
 		editCmd(),
 		versionCmd(),
 	)
